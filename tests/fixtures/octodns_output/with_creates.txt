@@ -1,0 +1,7 @@
+********************************************************************************
+* example.com.
+********************************************************************************
+*   hetzner (HetznerProvider)
+*   Create <ARecord A 3600, www.example.com., ['1.2.3.4']> (zones)
+*   Create <CnameRecord CNAME 3600, blog.example.com., ['blog.external.com.']> (zones)
+*   Summary: Creates=2, Updates=0, Deletes=0, Existing=5, Meta=False

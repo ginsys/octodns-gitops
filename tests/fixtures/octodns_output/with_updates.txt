@@ -1,0 +1,11 @@
+********************************************************************************
+* example.com.
+********************************************************************************
+*   hetzner (HetznerProvider)
+*   Update
+*     <ARecord A 1800, www.example.com., ['1.2.3.4']> ->
+*     <ARecord A 3600, www.example.com., ['1.2.3.4']> (zones)
+*   Update
+*     <ARecord A 3600, mail.example.com., ['5.6.7.8']> ->
+*     <ARecord A 3600, mail.example.com., ['9.10.11.12']> (zones)
+*   Summary: Creates=0, Updates=2, Deletes=0, Existing=10, Meta=False

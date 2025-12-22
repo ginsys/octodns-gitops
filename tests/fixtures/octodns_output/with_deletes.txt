@@ -1,0 +1,7 @@
+********************************************************************************
+* example.com.
+********************************************************************************
+*   hetzner (HetznerProvider)
+*   Delete <ARecord A 3600, old.example.com., ['1.2.3.4']>
+*   Delete <CnameRecord CNAME 3600, legacy.example.com., ['old.example.com.']>
+*   Summary: Creates=0, Updates=0, Deletes=2, Existing=8, Meta=False

@@ -28,7 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "octodns>=1.0",
-    "octodns-hetzner",
+    "octodns-hetzner @ git+https://github.com/ginsys/octodns-hetzner.git@main",
     "pyyaml>=6.0",
     "tabulate>=0.9",
     "dnspython>=2.0",
@@ -56,4 +56,25 @@ include = [
     "/README.md",
     "/LICENSE",
     "/NOTICE",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --cov=src/octodns_gitops --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src/octodns_gitops"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
 ]

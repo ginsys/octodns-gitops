@@ -1,0 +1,20 @@
+********************************************************************************
+* example.com.
+********************************************************************************
+*   hetzner (HetznerProvider)
+*   Create <ARecord A 3600, www.example.com., ['1.2.3.4']> (zones)
+*   Summary: Creates=1, Updates=0, Deletes=0, Existing=5, Meta=False
+********************************************************************************
+* example.org.
+********************************************************************************
+*   hetzner (HetznerProvider)
+*   Update
+*     <ARecord A 1800, mail.example.org., ['5.6.7.8']> ->
+*     <ARecord A 3600, mail.example.org., ['5.6.7.8']> (zones)
+*   Summary: Creates=0, Updates=1, Deletes=0, Existing=8, Meta=False
+********************************************************************************
+* example.net.
+********************************************************************************
+*   hetzner (HetznerProvider)
+*   Delete <ARecord A 3600, old.example.net., ['9.10.11.12']>
+*   Summary: Creates=0, Updates=0, Deletes=1, Existing=3, Meta=False

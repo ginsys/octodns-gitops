@@ -28,7 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "octodns>=1.0",
-    "octodns-hetzner @ git+https://github.com/ginsys/octodns-hetzner.git@main",
+    "octodns-hetzner @ git+https://github.com/ginsys/octodns-hetzner.git@new_dns_api",
     "pyyaml>=6.0",
     "tabulate>=0.9",
     "dnspython>=2.0",

@@ -1,0 +1,35 @@
+# octodns-gitops mise configuration template
+# Copy this file to your dns-zones repository
+
+[tools]
+python = "3.12"
+
+[env]
+_.python.venv = { path = "pyvenv", create = true }
+
+# Update this to change octodns-gitops version
+# Use a commit hash or tag (e.g., "v0.1.0" or "abc123")
+OCTODNS_GITOPS_VERSION = "main"
+
+[tasks.setup]
+description = "Install dependencies and generate Makefile"
+run = """
+pip install --upgrade pip
+pip install "octodns-gitops @ git+https://github.com/ginsys/octodns-gitops@${OCTODNS_GITOPS_VERSION}"
+octodns-gitops-init > Makefile
+"""
+
+[tasks.reinstall]
+description = "Clean reinstall (removes venv and Makefile)"
+run = """
+rm -rf pyvenv Makefile
+mise trust
+mise run setup
+"""
+
+[tasks.update]
+description = "Update octodns-gitops to latest version"
+run = """
+pip install --upgrade "octodns-gitops @ git+https://github.com/ginsys/octodns-gitops@${OCTODNS_GITOPS_VERSION}"
+octodns-gitops-init > Makefile
+"""

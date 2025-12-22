@@ -1,0 +1,6 @@
+octodns-gitops
+Copyright 2024 Serge van Ginderachter / Ginsys BV
+
+This project includes code that interfaces with OctoDNS.
+OctoDNS is licensed under the MIT License.
+See: https://github.com/octodns/octodns

@@ -46,6 +46,9 @@ octodns-gitops-drift = "octodns_gitops.cli.drift:main"
 octodns-gitops-report = "octodns_gitops.cli.report:main"
 octodns-gitops-init = "octodns_gitops.bootstrap.makefile:main"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/octodns_gitops"]
 

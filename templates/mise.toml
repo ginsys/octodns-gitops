@@ -14,23 +14,17 @@ OCTODNS_GITOPS_VERSION = "main"
 [tasks.setup]
 description = "Install dependencies and generate Makefile"
 run = """
+mise trust
 rm -rf {{config_root}}/pyvenv {{config_root}}/Makefile
 python -m venv {{config_root}}/pyvenv
 pip install --upgrade pip
-pip install "octodns-gitops @ git+https://github.com/ginsys/octodns-gitops@${OCTODNS_GITOPS_VERSION}"
+pip install --no-cache-dir --force-reinstall "octodns-gitops @ git+https://github.com/ginsys/octodns-gitops@${OCTODNS_GITOPS_VERSION}"
 octodns-gitops-init > Makefile
 """
 
-[tasks.reinstall]
-description = "Clean reinstall (removes venv and Makefile)"
-run = """
-mise trust
-mise run setup
-"""
-
 [tasks.update]
-description = "Update octodns-gitops to latest version"
+description = "Update mise file to latest version"
 run = """
-pip install --upgrade "octodns-gitops @ git+https://github.com/ginsys/octodns-gitops@${OCTODNS_GITOPS_VERSION}"
+curl https://raw.githubusercontent.com/ginsys/octodns-gitops/main/templates/mise.toml -o {{config_root}}/mise.toml
 octodns-gitops-init > {{config_root}}/Makefile
 """

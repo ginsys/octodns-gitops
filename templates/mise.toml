@@ -14,6 +14,7 @@ OCTODNS_GITOPS_VERSION = "main"
 [tasks.setup]
 description = "Install dependencies and generate Makefile"
 run = """
+rm -rf pyvenv Makefile
 pip install --upgrade pip
 pip install "octodns-gitops @ git+https://github.com/ginsys/octodns-gitops@${OCTODNS_GITOPS_VERSION}"
 octodns-gitops-init > Makefile
@@ -22,7 +23,6 @@ octodns-gitops-init > Makefile
 [tasks.reinstall]
 description = "Clean reinstall (removes venv and Makefile)"
 run = """
-rm -rf pyvenv Makefile
 mise trust
 mise run setup
 """

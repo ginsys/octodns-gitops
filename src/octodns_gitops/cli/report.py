@@ -79,7 +79,7 @@ def format_report_output(csv_output: str, zone: str) -> None:
         return
 
     # Separate consistent and inconsistent records
-    inconsistent = [r for r in rows if r.get("consistent") == "False"]
+    inconsistent = [r for r in rows if r.get("Consistent") == "False"]
 
     # Print summary of inconsistencies
     if inconsistent:
@@ -89,7 +89,7 @@ def format_report_output(csv_output: str, zone: str) -> None:
         summary_data = []
         for record in inconsistent:
             summary_data.append(
-                [truncate_value(record["name"], 40), record["type"], "Inconsistent"]
+                [truncate_value(record["Name"], 40), record["Type"], "Inconsistent"]
             )
         print(tabulate(summary_data, headers=summary_headers, tablefmt="simple"))
         print()
@@ -102,19 +102,19 @@ def format_report_output(csv_output: str, zone: str) -> None:
 
     # Determine server columns dynamically
     server_cols = [
-        k for k in rows[0].keys() if k not in ["name", "type", "ttl", "consistent"]
+        k for k in rows[0].keys() if k not in ["Name", "Type", "TTL", "Consistent"]
     ]
 
     headers = ["Name", "Type", "TTL"] + server_cols + ["OK"]
     table_data = []
 
     for record in rows:
-        row = [truncate_value(record["name"], 30), record["type"], record["ttl"]]
+        row = [truncate_value(record["Name"], 30), record["Type"], record["TTL"]]
         # Add server responses (truncated)
         for server in server_cols:
             row.append(truncate_value(record.get(server, ""), 40))
         # Consistent column
-        row.append("Y" if record.get("consistent") == "True" else "N")
+        row.append("Y" if record.get("Consistent") == "True" else "N")
         table_data.append(row)
 
     print(tabulate(table_data, headers=headers, tablefmt="grid"))

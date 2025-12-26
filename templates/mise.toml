@@ -14,7 +14,8 @@ OCTODNS_GITOPS_VERSION = "main"
 [tasks.setup]
 description = "Install dependencies and generate Makefile"
 run = """
-rm -rf pyvenv Makefile
+rm -rf {{config_root}}/pyvenv {{config_root}}/Makefile
+python -m venv {{config_root}}/pyvenv
 pip install --upgrade pip
 pip install "octodns-gitops @ git+https://github.com/ginsys/octodns-gitops@${OCTODNS_GITOPS_VERSION}"
 octodns-gitops-init > Makefile
@@ -31,5 +32,5 @@ mise run setup
 description = "Update octodns-gitops to latest version"
 run = """
 pip install --upgrade "octodns-gitops @ git+https://github.com/ginsys/octodns-gitops@${OCTODNS_GITOPS_VERSION}"
-octodns-gitops-init > Makefile
+octodns-gitops-init > {{config_root}}/Makefile
 """

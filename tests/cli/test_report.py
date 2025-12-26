@@ -199,7 +199,7 @@ class TestFormatReportOutput:
 
     def test_consistent_records(self, capsys):
         """All consistent should show success message."""
-        csv_output = """name,type,ttl,ns1,ns2,consistent
+        csv_output = """Name,Type,TTL,ns1,ns2,Consistent
 www,A,3600,1.2.3.4,1.2.3.4,True
 mail,MX,3600,10 mail,10 mail,True
 """
@@ -210,7 +210,7 @@ mail,MX,3600,10 mail,10 mail,True
 
     def test_inconsistent_records(self, capsys):
         """Inconsistent records should show warning."""
-        csv_output = """name,type,ttl,ns1,ns2,consistent
+        csv_output = """Name,Type,TTL,ns1,ns2,Consistent
 www,A,3600,1.2.3.4,5.6.7.8,False
 """
         format_report_output(csv_output, "example.com.")
@@ -220,7 +220,7 @@ www,A,3600,1.2.3.4,5.6.7.8,False
 
     def test_no_records(self, capsys):
         """No records should print 'No records found'."""
-        csv_output = """name,type,ttl,consistent
+        csv_output = """Name,Type,TTL,Consistent
 """
         format_report_output(csv_output, "example.com.")
 
@@ -266,7 +266,7 @@ zones:
 
         mock_subprocess.return_value = MagicMock(
             returncode=0,
-            stdout="name,type,ttl,ns1,consistent\nwww,A,3600,1.2.3.4,True\n",
+            stdout="Name,Type,TTL,ns1,Consistent\nwww,A,3600,1.2.3.4,True\n",
             stderr="",
         )
 
@@ -295,7 +295,7 @@ zones:
 
         mock_subprocess.return_value = MagicMock(
             returncode=0,
-            stdout="name,type,ttl,ns1,consistent\nwww,A,3600,1.2.3.4,True\n",
+            stdout="Name,Type,TTL,ns1,Consistent\nwww,A,3600,1.2.3.4,True\n",
             stderr="",
         )
 

@@ -46,22 +46,19 @@ class TestInit:
     """Tests for ExternalDnsFilter initialization."""
 
     def test_default_values(self):
-        """Should use default txt_prefix='extdns' and default type_prefixes."""
+        """Should use default txt_prefix='extdns-'."""
         f = ExternalDnsFilter("test")
-        assert f.txt_prefix == "extdns"
-        assert f.type_prefixes == ["a-", "aaaa-", "cname-", "txt-"]
+        assert f.txt_prefix == "extdns-"
         assert f.owner_id is None
 
     def test_custom_values(self):
-        """Should accept custom txt_prefix, type_prefixes, and owner_id."""
+        """Should accept custom txt_prefix and owner_id."""
         f = ExternalDnsFilter(
             "test",
-            txt_prefix="mydns",
-            type_prefixes=["a-", "cname-"],
+            txt_prefix="mydns-",
             owner_id="my-cluster",
         )
-        assert f.txt_prefix == "mydns"
-        assert f.type_prefixes == ["a-", "cname-"]
+        assert f.txt_prefix == "mydns-"
         assert f.owner_id == "my-cluster"
 
 
@@ -77,65 +74,73 @@ class TestParseTxtName:
         result = filter_instance._parse_txt_name("otherprefixwww", "example.com.")
         assert result == (None, None)
 
-    def test_subdomain_no_type_prefix(self, filter_instance):
-        """'extdnswww' should return ('www', 'A')."""
-        result = filter_instance._parse_txt_name("extdnswww", "example.com.")
+    # New format tests (dot separator)
+    def test_subdomain_a_record_dot(self, filter_instance):
+        """'extdns-a.www' should return ('www', 'A')."""
+        result = filter_instance._parse_txt_name("extdns-a.www", "example.com.")
         assert result == ("www", "A")
 
-    def test_subdomain_a_prefix(self, filter_instance):
-        """'extdnsa-www' should return ('www', 'A')."""
-        result = filter_instance._parse_txt_name("extdnsa-www", "example.com.")
-        assert result == ("www", "A")
-
-    def test_subdomain_aaaa_prefix(self, filter_instance):
-        """'extdnsaaaa-www' should return ('www', 'AAAA')."""
-        result = filter_instance._parse_txt_name("extdnsaaaa-www", "example.com.")
+    def test_subdomain_aaaa_record_dot(self, filter_instance):
+        """'extdns-aaaa.www' should return ('www', 'AAAA')."""
+        result = filter_instance._parse_txt_name("extdns-aaaa.www", "example.com.")
         assert result == ("www", "AAAA")
 
-    def test_subdomain_cname_prefix(self, filter_instance):
-        """'extdnscname-api' should return ('api', 'CNAME')."""
-        result = filter_instance._parse_txt_name("extdnscname-api", "example.com.")
+    def test_subdomain_cname_record_dot(self, filter_instance):
+        """'extdns-cname.api' should return ('api', 'CNAME')."""
+        result = filter_instance._parse_txt_name("extdns-cname.api", "example.com.")
         assert result == ("api", "CNAME")
 
-    def test_subdomain_txt_prefix(self, filter_instance):
-        """'extdnstxt-spf' should return ('spf', 'TXT')."""
-        result = filter_instance._parse_txt_name("extdnstxt-spf", "example.com.")
+    def test_subdomain_txt_record_dot(self, filter_instance):
+        """'extdns-txt.spf' should return ('spf', 'TXT')."""
+        result = filter_instance._parse_txt_name("extdns-txt.spf", "example.com.")
         assert result == ("spf", "TXT")
 
-    def test_apex_no_type_prefix(self, filter_instance):
-        """'extdnsexample.com' for zone 'example.com.' should return ('', 'A')."""
-        result = filter_instance._parse_txt_name("extdnsexample.com", "example.com.")
+    def test_apex_new_format(self, filter_instance):
+        """'extdns-a' (no hostname) should return ('', 'A')."""
+        result = filter_instance._parse_txt_name("extdns-a", "example.com.")
         assert result == ("", "A")
 
-    def test_apex_with_a_prefix(self, filter_instance):
-        """'extdnsa-example.com' for zone 'example.com.' should return ('', 'A')."""
-        result = filter_instance._parse_txt_name("extdnsa-example.com", "example.com.")
-        assert result == ("", "A")
-
-    def test_apex_with_cname_prefix(self, filter_instance):
-        """'extdnscname-example.com' should return ('', 'CNAME')."""
-        result = filter_instance._parse_txt_name(
-            "extdnscname-example.com", "example.com."
-        )
+    def test_apex_cname_new_format(self, filter_instance):
+        """'extdns-cname' (apex CNAME) should return ('', 'CNAME')."""
+        result = filter_instance._parse_txt_name("extdns-cname", "example.com.")
         assert result == ("", "CNAME")
 
-    def test_nested_subdomain(self, filter_instance):
-        """'extdnsa-api.v1' should return ('api.v1', 'A')."""
-        result = filter_instance._parse_txt_name("extdnsa-api.v1", "example.com.")
+    def test_any_record_type(self, filter_instance):
+        """Parser should handle any DNS record type dynamically."""
+        result = filter_instance._parse_txt_name("extdns-srv.service", "example.com.")
+        assert result == ("service", "SRV")
+
+    def test_nested_subdomain_dot(self, filter_instance):
+        """'extdns-a.api.v1' should return ('api.v1', 'A')."""
+        result = filter_instance._parse_txt_name("extdns-a.api.v1", "example.com.")
+        assert result == ("api.v1", "A")
+
+    # Old format tests (dash separator) - backward compatibility
+    def test_old_dash_format_subdomain(self, filter_instance):
+        """'extdns-a-www' (old format) should still work."""
+        result = filter_instance._parse_txt_name("extdns-a-www", "example.com.")
+        assert result == ("www", "A")
+
+    def test_old_dash_format_cname(self, filter_instance):
+        """'extdns-cname-api' (old format) should still work."""
+        result = filter_instance._parse_txt_name("extdns-cname-api", "example.com.")
+        assert result == ("api", "CNAME")
+
+    def test_old_dash_format_apex(self, filter_instance):
+        """'extdns-a-example.com' for zone 'example.com.' should return ('', 'A')."""
+        result = filter_instance._parse_txt_name("extdns-a-example.com", "example.com.")
+        assert result == ("", "A")
+
+    def test_old_dash_format_nested(self, filter_instance):
+        """'extdns-a-api.v1' (old format) should return ('api.v1', 'A')."""
+        result = filter_instance._parse_txt_name("extdns-a-api.v1", "example.com.")
         assert result == ("api.v1", "A")
 
     def test_custom_txt_prefix(self):
-        """Custom txt_prefix='mydns' should work."""
-        f = ExternalDnsFilter("test", txt_prefix="mydns")
-        result = f._parse_txt_name("mydnsa-www", "example.com.")
+        """Custom txt_prefix='mydns-' should work."""
+        f = ExternalDnsFilter("test", txt_prefix="mydns-")
+        result = f._parse_txt_name("mydns-a.www", "example.com.")
         assert result == ("www", "A")
-
-    def test_unknown_type_prefix_defaults_to_a(self, filter_instance):
-        """Unknown type prefix should still parse, defaulting to 'A'."""
-        # 'extdnsxxx-www' - 'xxx-' is not a known type prefix
-        # So it should return ('xxx-www', 'A')
-        result = filter_instance._parse_txt_name("extdnsxxx-www", "example.com.")
-        assert result == ("xxx-www", "A")
 
 
 class TestIsExternalDnsTxt:
@@ -153,14 +158,14 @@ class TestIsExternalDnsTxt:
 
     def test_unrelated_txt(self, filter_instance):
         """TXT without heritage should return (False, None, None)."""
-        record = MockRecord("extdnsa-www", "TXT", ["some-other-value"])
+        record = MockRecord("extdns-a.www", "TXT", ["some-other-value"])
         result = filter_instance._is_external_dns_txt(record, "example.com.")
         assert result == (False, None, None)
 
     def test_with_heritage(self, filter_instance):
         """TXT with heritage=external-dns should return (True, name, type)."""
         record = MockRecord(
-            "extdnsa-www", "TXT", ["heritage=external-dns,external-dns/owner=default"]
+            "extdns-a.www", "TXT", ["heritage=external-dns,external-dns/owner=default"]
         )
         result = filter_instance._is_external_dns_txt(record, "example.com.")
         assert result == (True, "www", "A")
@@ -168,7 +173,7 @@ class TestIsExternalDnsTxt:
     def test_any_owner_when_not_configured(self, filter_instance):
         """Any owner_id should match when owner_id=None."""
         record = MockRecord(
-            "extdnsa-www", "TXT", ["heritage=external-dns,external-dns/owner=any-owner"]
+            "extdns-a.www", "TXT", ["heritage=external-dns,external-dns/owner=any-owner"]
         )
         result = filter_instance._is_external_dns_txt(record, "example.com.")
         assert result == (True, "www", "A")
@@ -177,7 +182,7 @@ class TestIsExternalDnsTxt:
         """Matching owner_id should return True."""
         f = ExternalDnsFilter("test", owner_id="my-cluster")
         record = MockRecord(
-            "extdnsa-www",
+            "extdns-a.www",
             "TXT",
             ["heritage=external-dns,external-dns/owner=my-cluster"],
         )
@@ -188,7 +193,7 @@ class TestIsExternalDnsTxt:
         """Non-matching owner_id should return False."""
         f = ExternalDnsFilter("test", owner_id="my-cluster")
         record = MockRecord(
-            "extdnsa-www",
+            "extdns-a.www",
             "TXT",
             ["heritage=external-dns,external-dns/owner=other-cluster"],
         )
@@ -198,7 +203,7 @@ class TestIsExternalDnsTxt:
     def test_checks_all_values(self, filter_instance):
         """Should check all TXT values, not just first."""
         record = MockRecord(
-            "extdnsa-www",
+            "extdns-a.www",
             "TXT",
             ["some-other-value", "heritage=external-dns,external-dns/owner=default"],
         )
@@ -207,9 +212,9 @@ class TestIsExternalDnsTxt:
 
     def test_returns_correct_type(self, filter_instance):
         """Should return correct DNS record type from marker."""
-        record_a = MockRecord("extdnsa-www", "TXT", ["heritage=external-dns"])
-        record_cname = MockRecord("extdnscname-www", "TXT", ["heritage=external-dns"])
-        record_aaaa = MockRecord("extdnsaaaa-www", "TXT", ["heritage=external-dns"])
+        record_a = MockRecord("extdns-a.www", "TXT", ["heritage=external-dns"])
+        record_cname = MockRecord("extdns-cname.www", "TXT", ["heritage=external-dns"])
+        record_aaaa = MockRecord("extdns-aaaa.www", "TXT", ["heritage=external-dns"])
 
         assert filter_instance._is_external_dns_txt(record_a, "example.com.") == (
             True,
@@ -293,7 +298,7 @@ class TestProcessTargetZone:
         zone = MockZone(
             "example.com.",
             [
-                MockRecord("extdnsa-www", "TXT", ["heritage=external-dns"]),
+                MockRecord("extdns-a.www", "TXT", ["heritage=external-dns"]),
                 MockRecord("www", "A", ["1.2.3.4"]),
             ],
         )
@@ -301,14 +306,14 @@ class TestProcessTargetZone:
         result = filter_instance.process_target_zone(zone, None)
 
         record_names = [r.name for r in result.records]
-        assert "extdnsa-www" not in record_names
+        assert "extdns-a.www" not in record_names
 
     def test_removes_managed_records(self, filter_instance):
         """Records managed by external-dns should be removed."""
         zone = MockZone(
             "example.com.",
             [
-                MockRecord("extdnsa-www", "TXT", ["heritage=external-dns"]),
+                MockRecord("extdns-a.www", "TXT", ["heritage=external-dns"]),
                 MockRecord("www", "A", ["1.2.3.4"]),
                 MockRecord("mail", "MX", ["10 mail.example.com."]),
             ],
@@ -326,7 +331,7 @@ class TestProcessTargetZone:
             "example.com.",
             [
                 MockRecord(
-                    "extdnsa-www", "TXT", ["heritage=external-dns"]
+                    "extdns-a.www", "TXT", ["heritage=external-dns"]
                 ),  # Manages www A
                 MockRecord("www", "A", ["1.2.3.4"]),  # Should be removed
                 MockRecord("www", "MX", ["10 mail.example.com."]),  # Should remain
@@ -360,7 +365,7 @@ class TestProcessTargetZone:
         zone = MockZone(
             "example.com.",
             [
-                MockRecord("extdnsa-www", "TXT", ["heritage=external-dns"]),
+                MockRecord("extdns-a.www", "TXT", ["heritage=external-dns"]),
                 MockRecord("www", "A", ["1.2.3.4"]),
                 MockRecord("www", "MX", ["10 mail.example.com."]),
             ],
@@ -376,7 +381,7 @@ class TestProcessTargetZone:
         zone = MockZone(
             "example.com.",
             [
-                MockRecord("extdnsa-example.com", "TXT", ["heritage=external-dns"]),
+                MockRecord("extdns-a", "TXT", ["heritage=external-dns"]),
                 MockRecord("", "A", ["1.2.3.4"]),
                 MockRecord("", "MX", ["10 mail.example.com."]),
             ],
@@ -407,7 +412,7 @@ class TestProcessSourceZone:
         zone = MockZone(
             "example.com.",
             [
-                MockRecord("extdnsa-www", "TXT", ["heritage=external-dns"]),
+                MockRecord("extdns-a.www", "TXT", ["heritage=external-dns"]),
                 MockRecord("www", "A", ["1.2.3.4"]),
             ],
         )
@@ -415,14 +420,14 @@ class TestProcessSourceZone:
         result = filter_instance.process_source_zone(zone, [])
 
         record_names = [r.name for r in result.records]
-        assert "extdnsa-www" not in record_names
+        assert "extdns-a.www" not in record_names
 
     def test_removes_managed_records(self, filter_instance):
         """Records managed by external-dns should be removed from source."""
         zone = MockZone(
             "example.com.",
             [
-                MockRecord("extdnsa-api", "TXT", ["heritage=external-dns"]),
+                MockRecord("extdns-a.api", "TXT", ["heritage=external-dns"]),
                 MockRecord("api", "A", ["5.6.7.8"]),
             ],
         )
@@ -437,7 +442,7 @@ class TestProcessSourceZone:
         zone = MockZone(
             "example.com.",
             [
-                MockRecord("extdnscname-blog", "TXT", ["heritage=external-dns"]),
+                MockRecord("extdns-cname.blog", "TXT", ["heritage=external-dns"]),
                 MockRecord("blog", "CNAME", ["blog.external.com."]),
                 MockRecord("blog", "TXT", ["verification-token"]),
             ],
@@ -468,7 +473,7 @@ class TestProcessSourceZone:
         zone = MockZone(
             "example.com.",
             [
-                MockRecord("extdnsa-api", "TXT", ["heritage=external-dns"]),
+                MockRecord("extdns-a.api", "TXT", ["heritage=external-dns"]),
                 MockRecord("api", "A", ["5.6.7.8"]),
                 MockRecord("api", "TXT", ["verification"]),
             ],
@@ -484,7 +489,7 @@ class TestProcessSourceZone:
         zone = MockZone(
             "example.com.",
             [
-                MockRecord("extdnsexample.com", "TXT", ["heritage=external-dns"]),
+                MockRecord("extdns-a", "TXT", ["heritage=external-dns"]),
                 MockRecord("", "A", ["1.2.3.4"]),
             ],
         )

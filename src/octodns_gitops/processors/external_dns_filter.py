@@ -26,84 +26,73 @@ class ExternalDnsFilter(BaseProcessor):
     records and prevents octodns from managing them.
 
     Configuration:
-        txt_prefixes: List of TXT record prefixes used by external-dns
-                      (default: ['a-', 'aaaa-', 'cname-'])
+        txt_prefix: Prefix used by external-dns for TXT records (default: 'extdns-')
         owner_id: Optional specific external-dns owner-id to filter
                   (default: None, matches any owner)
     """
-
-    # Map type prefixes to DNS record types
-    TYPE_PREFIX_MAP = {
-        "a-": "A",
-        "aaaa-": "AAAA",
-        "cname-": "CNAME",
-        "txt-": "TXT",
-    }
 
     def __init__(
         self,
         name: str,
         txt_prefix: str | None = None,
-        type_prefixes: list[str] | None = None,
         owner_id: str | None = None,
         **kwargs,
     ):
         super().__init__(name, **kwargs)
 
-        # TXT prefix used by external-dns (e.g., 'extdns')
-        self.txt_prefix = txt_prefix or "extdns"
-        # Type prefixes used by external-dns for record types (e.g., 'a-', 'cname-')
-        self.type_prefixes = type_prefixes or ["a-", "aaaa-", "cname-", "txt-"]
+        # TXT prefix used by external-dns (e.g., 'extdns-')
+        self.txt_prefix = txt_prefix or "extdns-"
         self.owner_id = owner_id
         self._external_dns_records: set[tuple[str, str]] = set()
 
         log.info(
             f"ExternalDnsFilter: initialized with txt_prefix={self.txt_prefix}, "
-            f"type_prefixes={self.type_prefixes}, owner_id={self.owner_id}"
+            f"owner_id={self.owner_id}"
         )
 
     def _parse_txt_name(
         self, txt_name: str, zone_name: str
     ) -> tuple[str | None, str | None]:
         """
-        Parse external-dns TXT record name to extract original hostname and record type.
+        Parse external-dns TXT record name to extract hostname and record type.
 
         Args:
-            txt_name: TXT record name (e.g., 'extdnsautops.eu', 'extdnsa-chat')
-            zone_name: Zone name (e.g., 'autops.eu.')
+            txt_name: TXT record name (e.g., 'extdns-a.www', 'extdns-cname.api')
+            zone_name: Zone name (e.g., 'autops.be.')
 
         Returns:
             tuple: (hostname, record_type) or (None, None) if not parseable
                    hostname is empty string for apex records
 
-        Examples for txt_prefix='extdns', zone='autops.eu.':
-        - 'extdnsautops.eu' -> ('', 'A') (apex, default type)
-        - 'extdnsa-autops.eu' -> ('', 'A') (apex A record)
-        - 'extdnschat' -> ('chat', 'A') (default type)
-        - 'extdnsa-chat' -> ('chat', 'A') (A record)
-        - 'extdnscname-chat' -> ('chat', 'CNAME') (CNAME record)
+        Examples for txt_prefix='extdns-':
+            'extdns-a.www' -> ('www', 'A')
+            'extdns-cname.api' -> ('api', 'CNAME')
+            'extdns-a' -> ('', 'A') (apex)
+            'extdns-a-www' -> ('www', 'A') (old dash format)
         """
-        zone_base = zone_name.rstrip(".")  # 'autops.eu'
-
         if not txt_name.startswith(self.txt_prefix):
             return None, None
 
-        # Strip txt_prefix
-        remainder = txt_name[len(self.txt_prefix) :]
+        remainder = txt_name[len(self.txt_prefix):]
 
-        # Check for type prefix (a-, cname-, etc.) and extract record type
-        record_type = "A"  # default type if no prefix found
-        for type_prefix in self.type_prefixes:
-            if remainder.startswith(type_prefix):
-                remainder = remainder[len(type_prefix) :]
-                record_type = self.TYPE_PREFIX_MAP.get(type_prefix, "A")
-                break
+        # Try dot separator first (new format)
+        if "." in remainder:
+            type_part, hostname = remainder.split(".", 1)
+            # Valid new format: type_part should be a simple record type (no dashes)
+            if "-" not in type_part:
+                return hostname, type_part.upper()
+            # If type_part has dashes, fall through to try dash separator
 
-        # Map zone name to empty string (apex)
-        if remainder == zone_base:
-            return "", record_type
+        # Try dash separator (old format or no separator found)
+        if "-" in remainder:
+            type_part, hostname = remainder.split("-", 1)
+            # Check if hostname equals zone base (apex case for old format)
+            if hostname == zone_name.rstrip("."):
+                hostname = ""
+            return hostname, type_part.upper()
 
-        return remainder, record_type
+        # No separator = apex record (just the type, e.g., "a" for apex A)
+        return "", remainder.upper()
 
     def _is_external_dns_txt(
         self, record, zone_name: str

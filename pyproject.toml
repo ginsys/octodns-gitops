@@ -9,9 +9,7 @@ description = "GitOps tooling for OctoDNS: processors, CLI wrappers, and workflo
 readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.10"
-authors = [
-    { name = "Serge van Ginderachter", email = "serge@ginsys.eu" },
-]
+authors = [{ name = "Serge van Ginderachter", email = "serge@ginsys.eu" }]
 keywords = ["dns", "octodns", "gitops", "infrastructure"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -28,7 +26,8 @@ classifiers = [
 ]
 dependencies = [
     "octodns>=1.0",
-    "octodns-hetzner @ git+https://github.com/ginsys/octodns-hetzner.git@new_dns_api",
+    "octodns-hetzner @ git+https://github.com/octodns/octodns-hetzner.git@3e994fc800ea8accd56a6087dd097f190bdfe8f4",
+    #"octodns-hetzner @ git+https://github.com/ginsys/octodns-hetzner.git@3e994fc800ea8accd56a6087dd097f190bdfe8f4",
     "pyyaml>=6.0",
     "tabulate>=0.9",
     "dnspython>=2.0",
@@ -53,19 +52,10 @@ allow-direct-references = true
 packages = ["src/octodns_gitops"]
 
 [tool.hatch.build.targets.sdist]
-include = [
-    "/src",
-    "/templates",
-    "/README.md",
-    "/LICENSE",
-    "/NOTICE",
-]
+include = ["/src", "/templates", "/README.md", "/LICENSE", "/NOTICE"]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-]
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -77,7 +67,4 @@ source = ["src/octodns_gitops"]
 branch = true
 
 [tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "if __name__ == .__main__.:",
-]
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:"]

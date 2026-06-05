@@ -243,6 +243,13 @@ class ExternalDnsFilter(BaseProcessor):
                 f"from zone {existing.name}"
             )
 
+        # Remember which (name, type) pairs external-dns owns in the live zone.
+        # The TXT ownership markers only exist in live DNS, never in the YAML
+        # source, so process_source_and_target_zones() relies on this set to
+        # strip the same records from the desired zone. Assigned fresh on every
+        # call so it resets per zone/target.
+        self._external_dns_records = managed_records
+
         # Filter individual TXT values containing heritage=external-dns
         txt_modified = self._filter_txt_values(existing)
         if txt_modified > 0:
@@ -252,6 +259,61 @@ class ExternalDnsFilter(BaseProcessor):
             )
 
         return existing
+
+    def process_source_and_target_zones(
+        self, desired, existing, target, lenient=False
+    ):
+        """
+        Remove external-dns managed records from the desired zone.
+
+        Runs during ``provider.plan()`` immediately after
+        ``process_target_zone()``, which has already removed external-dns
+        records (and their TXT ownership markers) from ``existing`` and
+        recorded the owned ``(name, type)`` pairs in
+        ``self._external_dns_records``.
+
+        The YAML source zone never contains the external-dns TXT markers, so
+        it cannot be filtered by marker alone. If a record is defined in both
+        the source (desired) and owned by external-dns in live DNS, octodns
+        would otherwise plan a perpetual ``create``: the record is stripped
+        from ``existing`` but kept in ``desired``, so it never converges.
+
+        Removing the owned records from ``desired`` here makes octodns defer
+        to external-dns for records it owns, even when they are also present
+        in the zone files.
+
+        Args:
+            desired: The desired zone from the source/YAML
+            existing: The existing zone (already filtered by process_target_zone)
+            target: The target provider
+
+        Returns:
+            tuple: (desired, existing)
+        """
+        if not self._external_dns_records:
+            return desired, existing
+
+        records_to_remove = [
+            record
+            for record in desired.records
+            if (record.name, record._type) in self._external_dns_records
+        ]
+
+        for record in records_to_remove:
+            desired.remove_record(record)
+            log.info(
+                f"ExternalDnsFilter: removed external-dns managed record from "
+                f"desired zone: {record.name}.{desired.name} (type={record._type})"
+            )
+
+        if records_to_remove:
+            log.info(
+                f"ExternalDnsFilter: removed {len(records_to_remove)} external-dns "
+                f"managed records from desired zone {desired.name} "
+                f"(deferring to live external-dns ownership)"
+            )
+
+        return desired, existing
 
     def process_source_zone(self, desired, sources):
         """

@@ -504,3 +504,127 @@ class TestProcessSourceZone:
         zone = MockZone("example.com.")
         result = filter_instance.process_source_zone(zone, [])
         assert result is zone
+
+
+class TestProcessSourceAndTargetZones:
+    """Tests for process_source_and_target_zones()."""
+
+    @pytest.fixture
+    def filter_instance(self):
+        return ExternalDnsFilter("test")
+
+    def test_apex_double_definition_converges(self, filter_instance):
+        """Apex A defined in BOTH the YAML source and owned by external-dns
+        in live DNS should be removed from both zones (the real drift bug).
+
+        The source/YAML has no TXT marker, so process_source_zone() alone
+        leaves the apex A in desired while process_target_zone() strips it
+        from existing -> octodns would plan a perpetual create. After the
+        target pass populates the owned set, process_source_and_target_zones()
+        must strip the apex A from desired too, leaving no change.
+        """
+        existing = MockZone(
+            "example.com.",
+            [
+                MockRecord(
+                    "extdns-a",
+                    "TXT",
+                    ["heritage=external-dns,external-dns/owner=default"],
+                ),
+                MockRecord("", "A", ["1.2.3.4"]),
+                MockRecord("", "MX", ["10 mail.example.com."]),
+            ],
+        )
+        # Desired (from YAML) has the same apex A but NO ownership marker.
+        desired = MockZone(
+            "example.com.",
+            [
+                MockRecord("", "A", ["1.2.3.4"]),
+                MockRecord("", "MX", ["10 mail.example.com."]),
+            ],
+        )
+
+        # Mirrors octodns provider.plan(): target pass first, then the
+        # source-and-target pass.
+        filter_instance.process_target_zone(existing, None)
+        result_desired, result_existing = (
+            filter_instance.process_source_and_target_zones(desired, existing, None)
+        )
+
+        desired_pairs = [(r.name, r._type) for r in result_desired.records]
+        existing_pairs = [(r.name, r._type) for r in result_existing.records]
+
+        # Apex A is gone from both -> no create/update/delete planned.
+        assert ("", "A") not in desired_pairs
+        assert ("", "A") not in existing_pairs
+        # Non-managed apex records (MX) are preserved on both sides.
+        assert ("", "MX") in desired_pairs
+        assert ("", "MX") in existing_pairs
+
+    def test_strips_managed_subdomain_from_desired(self, filter_instance):
+        """A subdomain owned by external-dns is removed from desired."""
+        existing = MockZone(
+            "example.com.",
+            [
+                MockRecord("extdns-a.www", "TXT", ["heritage=external-dns"]),
+                MockRecord("www", "A", ["1.2.3.4"]),
+            ],
+        )
+        desired = MockZone(
+            "example.com.",
+            [
+                MockRecord("www", "A", ["1.2.3.4"]),
+                MockRecord("blog", "A", ["5.6.7.8"]),
+            ],
+        )
+
+        filter_instance.process_target_zone(existing, None)
+        result_desired, _ = filter_instance.process_source_and_target_zones(
+            desired, existing, None
+        )
+
+        desired_pairs = [(r.name, r._type) for r in result_desired.records]
+        assert ("www", "A") not in desired_pairs
+        assert ("blog", "A") in desired_pairs
+
+    def test_owner_id_mismatch_leaves_desired_untouched(self):
+        """When the marker owner does not match the configured owner_id, the
+        record is not treated as managed and desired is left alone."""
+        f = ExternalDnsFilter("test", owner_id="my-cluster")
+        existing = MockZone(
+            "example.com.",
+            [
+                MockRecord(
+                    "extdns-a",
+                    "TXT",
+                    ["heritage=external-dns,external-dns/owner=other-cluster"],
+                ),
+                MockRecord("", "A", ["1.2.3.4"]),
+            ],
+        )
+        desired = MockZone("example.com.", [MockRecord("", "A", ["1.2.3.4"])])
+
+        f.process_target_zone(existing, None)
+        result_desired, _ = f.process_source_and_target_zones(
+            desired, existing, None
+        )
+
+        desired_pairs = [(r.name, r._type) for r in result_desired.records]
+        assert ("", "A") in desired_pairs
+
+    def test_no_target_pass_leaves_desired_untouched(self, filter_instance):
+        """Without a prior target pass the owned set is empty -> no-op."""
+        desired = MockZone("example.com.", [MockRecord("", "A", ["1.2.3.4"])])
+        result_desired, _ = filter_instance.process_source_and_target_zones(
+            desired, MockZone("example.com."), None
+        )
+        assert ("", "A") in [(r.name, r._type) for r in result_desired.records]
+
+    def test_returns_both_zones(self, filter_instance):
+        """Should return the (desired, existing) tuple."""
+        desired = MockZone("example.com.")
+        existing = MockZone("example.com.")
+        result = filter_instance.process_source_and_target_zones(
+            desired, existing, None
+        )
+        assert result == (desired, existing)

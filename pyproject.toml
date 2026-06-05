@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "octodns-gitops"
-version = "0.1.0"
+dynamic = ["version"]
 description = "GitOps tooling for OctoDNS: processors, CLI wrappers, and workflow automation"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -44,6 +44,11 @@ octodns-gitops-sync = "octodns_gitops.cli.sync:main"
 octodns-gitops-drift = "octodns_gitops.cli.drift:main"
 octodns-gitops-report = "octodns_gitops.cli.report:main"
 octodns-gitops-init = "octodns_gitops.bootstrap.makefile:main"
+
+[tool.hatch.version]
+# Version is derived from git tags (CalVer YYMM.N, e.g. 2606.1). Untagged
+# commits resolve to e.g. 2606.2.devN+g<sha>.
+source = "vcs"
 
 [tool.hatch.metadata]
 allow-direct-references = true

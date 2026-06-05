@@ -7,12 +7,12 @@ python = "3.12"
 [env]
 _.python.venv = { path = "pyvenv", create = true }
 
-# Update this to change octodns-gitops version
-# Use a commit hash or tag (e.g., "v0.1.0" or "abc123")
-OCTODNS_GITOPS_VERSION = "main"
+# Pin octodns-gitops to a release tag (CalVer YYMM.N, e.g. "2606.1").
+# Use "main" to track the latest, or a commit hash for a one-off.
+OCTODNS_GITOPS_VERSION = "2606.1"
 
 [tasks.setup]
-description = "Install dependencies and generate Makefile or update all"
+description = "Install dependencies and generate Makefile"
 run = """
 
 echo "# update python code"
@@ -24,8 +24,6 @@ pip install "octodns-gitops @ git+https://github.com/ginsys/octodns-gitops@${OCT
 echo "# update Makefile"
 octodns-gitops-init | tee {{config_root}}/Makefile
 
-echo "# update mise.toml"
-curl https://raw.githubusercontent.com/ginsys/octodns-gitops/main/templates/mise.toml | tee {{config_root}}/mise.toml
 mise trust
 
 """

@@ -15,8 +15,11 @@ import subprocess
 import sys
 
 from octodns_gitops.utils.config import (
+    format_domain_limit_error,
     format_missing_credentials_error,
+    get_missing_env_vars,
     is_credentials_error,
+    is_domain_limit_error,
 )
 
 
@@ -64,7 +67,13 @@ def format_zone_changes(zone_data: dict) -> list[str]:
     if not counts:
         return []  # Skip zones with no changes
 
-    lines.append(f"{zone_data['name']} ({', '.join(counts)})")
+    # Include the target provider when known so it's clear which provider a
+    # change applies to (a zone may be synced to several targets at once).
+    header = zone_data["name"]
+    target = zone_data.get("target")
+    if target:
+        header = f"{header} [{target}]"
+    lines.append(f"{header} ({', '.join(counts)})")
 
     # Format each change
     for change in zone_data["changes"]:
@@ -87,10 +96,15 @@ def detect_threshold_violations(zones: list[dict]) -> list[dict]:
         update_pct = (updates / existing * 100) if existing > 0 else 0
         delete_pct = (deletes / existing * 100) if existing > 0 else 0
 
+        # Label the violated zone with its target provider when known, so the
+        # warning points at the specific (zone, provider) pair.
+        target = zone_data.get("target")
+        label = f"{zone_data['name']} [{target}]" if target else zone_data["name"]
+
         if update_pct > 30:
             violations.append(
                 {
-                    "zone": zone_data["name"],
+                    "zone": label,
                     "type": "updates",
                     "count": updates,
                     "total": existing,
@@ -100,7 +114,7 @@ def detect_threshold_violations(zones: list[dict]) -> list[dict]:
         elif delete_pct > 30:
             violations.append(
                 {
-                    "zone": zone_data["name"],
+                    "zone": label,
                     "type": "deletes",
                     "count": deletes,
                     "total": existing,
@@ -111,52 +125,92 @@ def detect_threshold_violations(zones: list[dict]) -> list[dict]:
     return violations
 
 
-def parse_octodns_output(output: str) -> list[dict]:
-    """Parse octodns-sync output and extract zone changes"""
-    zones = []
-    current_zone = None
-    lines = output.split("\n")
-    i = 0
+# Target header inside a zone block, e.g. "* desec (DesecProvider)" or the
+# indented "*   hetzner (HetznerProvider)". Group 1 is the config target name,
+# group 2 the provider class.
+TARGET_HEADER_RE = re.compile(r"^\*\s+(\S+)\s+\((\w+Provider)\)\s*$")
 
+
+def parse_octodns_output(output: str) -> list[dict]:
+    """Parse octodns-sync output into per-zone, per-target change sets.
+
+    octoDNS groups its plan by zone and then by target provider::
+
+        * example.com.
+        * hetzner (HetznerProvider)
+        *   Update ...
+        *   Summary: ...
+        * desec (DesecProvider)
+        *   Create ...
+        *   Summary: ...
+
+    Each ``(zone, target)`` pair becomes its own entry so the target provider is
+    preserved in the reformatted summary. Output without a target header (as in
+    some tests) still yields one entry per zone with ``target`` set to ``None``.
+    """
+    zones = []
+    current_zone_name = None
+    current = None
+    lines = output.split("\n")
+
+    def new_entry(target=None, provider=None):
+        entry = {
+            "name": current_zone_name,
+            "target": target,
+            "provider": provider,
+            "changes": [],
+            "creates": 0,
+            "updates": 0,
+            "deletes": 0,
+            "existing": 0,
+        }
+        zones.append(entry)
+        return entry
+
+    i = 0
     while i < len(lines):
         line = lines[i]
+        target_match = TARGET_HEADER_RE.match(line)
 
         # Zone header: "* zonename." (ends with period, no parentheses)
         if line.startswith("* ") and not line.startswith("*   ") and "(" not in line:
             zone_name = line[2:].strip()
             if zone_name.endswith("."):  # Only process zone names (not provider names)
-                current_zone = {
-                    "name": zone_name,
-                    "changes": [],
-                    "creates": 0,
-                    "updates": 0,
-                    "deletes": 0,
-                    "existing": 0,
-                }
-                zones.append(current_zone)
+                current_zone_name = zone_name
+                current = None  # defer entry until a target or change appears
+
+        # Target header: "* desec (DesecProvider)" (indented or not)
+        elif target_match and current_zone_name:
+            current = new_entry(target_match.group(1), target_match.group(2))
 
         # Summary line: "*   Summary: ..."
-        elif "*   Summary:" in line and current_zone:
+        elif "*   Summary:" in line and current_zone_name:
+            if current is None:
+                current = new_entry()
             # Parse: Summary: Creates=0, Updates=3, Deletes=0, Existing=4, Meta=False
             match = re.search(
                 r"Creates=(\d+), Updates=(\d+), Deletes=(\d+), Existing=(\d+)", line
             )
             if match:
-                current_zone["creates"] = int(match.group(1))
-                current_zone["updates"] = int(match.group(2))
-                current_zone["deletes"] = int(match.group(3))
-                current_zone["existing"] = int(match.group(4))
+                current["creates"] = int(match.group(1))
+                current["updates"] = int(match.group(2))
+                current["deletes"] = int(match.group(3))
+                current["existing"] = int(match.group(4))
 
         # Change lines start with "*   Create/Update/Delete"
-        elif line.startswith("*   Create ") and current_zone:
+        elif line.startswith("*   Create ") and current_zone_name:
+            if current is None:
+                current = new_entry()
             # Format: *   Create <ARecord A 1800, name., ['value']> (source)
             record = parse_record_change(line)
             if record:
-                current_zone["changes"].append(
+                current["changes"].append(
                     f"+ {record['type']} {record['name']} {record['values']}"
                 )
 
-        elif line.startswith("*   Update") and current_zone:
+        elif line.startswith("*   Update") and current_zone_name:
+            if current is None:
+                current = new_entry()
             # Next 2 lines have old -> new
             if i + 2 < len(lines):
                 old_line = lines[i + 1]
@@ -168,22 +222,24 @@ def parse_octodns_output(output: str) -> list[dict]:
                     # Check if it's TTL-only or value change
                     if old_rec["values"] == new_rec["values"]:
                         # TTL change only
-                        current_zone["changes"].append(
+                        current["changes"].append(
                             f"~ {new_rec['type']} {new_rec['name']} TTL {old_rec['ttl']}->{new_rec['ttl']}"
                         )
                     else:
                         # Value change
-                        current_zone["changes"].append(
+                        current["changes"].append(
                             f"~ {new_rec['type']} {new_rec['name']} {old_rec['values']}->{new_rec['values']}"
                         )
                 i += 3  # Skip Update line + old line + new line, then continue
                 continue
 
-        elif line.startswith("*   Delete ") and current_zone:
+        elif line.startswith("*   Delete ") and current_zone_name:
+            if current is None:
+                current = new_entry()
             # Format: *   Delete <ARecord A 1800, name., ['value']>
             record = parse_record_change(line)
             if record:
-                current_zone["changes"].append(f"- {record['type']} {record['name']}")
+                current["changes"].append(f"- {record['type']} {record['name']}")
 
         i += 1
 
@@ -244,7 +300,11 @@ def main() -> int:
         # Error occurred - provide clean error message
         stderr = result.stderr or ""
 
-        if is_credentials_error(stderr):
+        if is_domain_limit_error(stderr):
+            print(format_domain_limit_error(stderr), file=sys.stderr)
+        elif is_credentials_error(stderr) and get_missing_env_vars(args.config):
+            # Only claim missing credentials when a required token is actually
+            # unset; otherwise fall through and surface the real provider error.
             print(
                 format_missing_credentials_error(args.config, stderr), file=sys.stderr
             )

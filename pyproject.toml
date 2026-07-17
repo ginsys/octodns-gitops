@@ -28,9 +28,11 @@ dependencies = [
     "octodns>=1.0",
     "octodns-hetzner @ git+https://github.com/octodns/octodns-hetzner.git@3e994fc800ea8accd56a6087dd097f190bdfe8f4",
     #"octodns-hetzner @ git+https://github.com/ginsys/octodns-hetzner.git@3e994fc800ea8accd56a6087dd097f190bdfe8f4",
+    "octodns-desec==1.3.0",
     "pyyaml>=6.0",
     "tabulate>=0.9",
     "dnspython>=2.0",
+    "ovh>=1.1",
 ]
 
 [project.urls]
@@ -44,6 +46,9 @@ octodns-gitops-sync = "octodns_gitops.cli.sync:main"
 octodns-gitops-drift = "octodns_gitops.cli.drift:main"
 octodns-gitops-report = "octodns_gitops.cli.report:main"
 octodns-gitops-init = "octodns_gitops.bootstrap.makefile:main"
+octodns-gitops-delegate = "octodns_gitops.cli.delegate:main"
+octodns-gitops-dnssec = "octodns_gitops.cli.dnssec:main"
+octodns-gitops-ovh-token = "octodns_gitops.cli.ovh_token:main"
 
 [tool.hatch.version]
 # Version is derived from git tags (CalVer YYMM.N, e.g. 2606.1). Untagged

@@ -9,7 +9,9 @@ from octodns_gitops.utils.config import (
     get_required_env_vars,
     get_missing_env_vars,
     format_missing_credentials_error,
+    format_domain_limit_error,
     is_credentials_error,
+    is_domain_limit_error,
 )
 
 
@@ -185,3 +187,39 @@ class TestIsCredentialsError:
         assert not is_credentials_error("Zone not found")
         assert not is_credentials_error("Invalid record type")
         assert not is_credentials_error("")
+
+    def test_domain_limit_not_credentials(self):
+        """A deSEC domain-limit 403 must not be treated as a credentials error."""
+        stderr = (
+            'DesecAPI API-Response: status code: 403 (expected 201), content: '
+            '{"detail":"Domain limit exceeded. Please contact support to create '
+            'additional domains."}'
+        )
+        assert not is_credentials_error(stderr)
+
+
+class TestIsDomainLimitError:
+    """Tests for is_domain_limit_error()."""
+
+    def test_detects_domain_limit_exceeded(self):
+        """Should detect the deSEC 'Domain limit exceeded' message."""
+        assert is_domain_limit_error(
+            '{"detail":"Domain limit exceeded. Please contact support ..."}'
+        )
+
+    def test_case_insensitive(self):
+        assert is_domain_limit_error("DOMAIN LIMIT reached")
+
+    def test_non_limit_error(self):
+        assert not is_domain_limit_error("401 Unauthorized")
+        assert not is_domain_limit_error("Zone not found")
+        assert not is_domain_limit_error("")
+
+
+class TestFormatDomainLimitError:
+    """Tests for format_domain_limit_error()."""
+
+    def test_mentions_limit_and_remedy(self):
+        result = format_domain_limit_error()
+        assert "domain limit" in result.lower()
+        assert "perm_create_domain" in result

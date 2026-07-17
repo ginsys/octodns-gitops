@@ -121,6 +121,11 @@ def is_credentials_error(stderr: str) -> bool:
     Returns:
         True if the error appears to be credentials-related
     """
+    # A provider quota error (e.g. deSEC "Domain limit exceeded") is returned as
+    # HTTP 403 Forbidden but is NOT a credentials problem; never treat it as one.
+    if is_domain_limit_error(stderr):
+        return False
+
     indicators = [
         "missing env var",
         "authentication",
@@ -132,3 +137,39 @@ def is_credentials_error(stderr: str) -> bool:
     ]
     stderr_lower = stderr.lower()
     return any(indicator in stderr_lower for indicator in indicators)
+
+
+def is_domain_limit_error(stderr: str) -> bool:
+    """
+    Check if stderr indicates a provider domain/zone quota was reached.
+
+    deSEC returns HTTP 403 with a body like
+    ``{"detail": "Domain limit exceeded. Please contact support to create
+    additional domains."}`` when the account cannot create more domains. This is
+    a 403 like an auth failure, but a different problem, so it is detected first.
+
+    Args:
+        stderr: Standard error output from octodns command
+
+    Returns:
+        True if the error appears to be a domain-limit/quota error
+    """
+    stderr_lower = stderr.lower()
+    return "domain limit" in stderr_lower or "limit exceeded" in stderr_lower
+
+
+def format_domain_limit_error(stderr: str = "") -> str:
+    """
+    Format a helpful error message for a provider domain-limit error.
+
+    Args:
+        stderr: Optional stderr output from octodns command (for context)
+
+    Returns:
+        Formatted error message string
+    """
+    return (
+        "deSEC domain limit reached: the account cannot create more domains.\n"
+        "Contact deSEC support to raise the limit, or verify the API token has "
+        "the perm_create_domain permission. Existing domains are unaffected."
+    )

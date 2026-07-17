@@ -19,7 +19,7 @@ LOGGING_CONFIG ?= logging.yaml
 
 .DEFAULT_GOAL := help
 
-.PHONY: help validate plan apply drift-check report
+.PHONY: help validate plan apply drift-check report delegate delegate-ns delegate-ds dnssec ovh-token
 
 help:
 \t@echo ""
@@ -40,9 +40,20 @@ help:
 \t@echo ""
 \t@echo "  report      - Query live nameservers and show consistency report"
 \t@echo ""
+\t@echo "Delegation & DNSSEC (opt-in zones under 'delegation:' in config.yaml):"
+\t@echo "  delegate     - DRY-RUN: preview a step (STEP=ns default, or STEP=ds)"
+\t@echo "  delegate-ns  - APPLY the NS delegation cutover only (never touches DNSSEC)"
+\t@echo "  delegate-ds  - APPLY DNSSEC DS (separate step; only zones with dnssec: true)"
+\t@echo "  dnssec       - Validate DNSSEC delegation (read-only)"
+\t@echo "  ovh-token    - Request a scoped OVH consumer key (ENV_PREFIX=OVH_...)"
+\t@echo ""
 \t@echo "Options:"
-\t@echo "  ZONE=example.com.  - Process only this zone (works with plan, apply, drift-check, report)"
+\t@echo "  ZONE=example.com.  - Process only this zone (works with plan, apply, drift-check, report, delegate*, dnssec)"
 \t@echo "  FORCE=1            - Override 30% safety threshold for apply"
+\t@echo "  STEP=ns|ds         - delegate preview step (default ns)"
+\t@echo "  SCOPE=             - dnssec scope: delegation (default) | all-signed-targets"
+\t@echo "  ENV_PREFIX=        - ovh-token credential env prefix (e.g. OVH_AUTOPS)"
+\t@echo "  ALLOW_MANUAL_PENDING=1 - delegate-ns/-ds: treat manual (Gandi) zones as informational"
 \t@echo "  DEBUG=1            - Enable debug output"
 \t@echo "  QUIET=             - Disable quiet mode (unset QUIET)"
 \t@echo "  LOGGING_CONFIG=    - Override logging config file"
@@ -93,6 +104,37 @@ drift-check:
 # Query live DNS and compare with configured source (zones)
 report:
 \t@QUIET=$(QUIET) DEBUG=$(DEBUG) octodns-gitops-report --config config.yaml $(if $(ZONE),--zone $(ZONE),) $(if $(LOGGING_CONFIG),--logging-config $(LOGGING_CONFIG),)
+
+# Delegation - DRY-RUN preview of a step (STEP=ns default, or STEP=ds); no writes
+STEP ?= ns
+delegate:
+\t@octodns-gitops-delegate --config config.yaml --step $(STEP) $(if $(ZONE),--zone $(ZONE),)
+
+# Delegation - APPLY the NS cutover only (never touches DNSSEC)
+delegate-ns:
+\t@echo ""
+\t@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+\t@echo "  APPLYING NS DELEGATION CUTOVER (no DNSSEC)"
+\t@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+\t@echo ""
+\t@octodns-gitops-delegate --doit --step ns --config config.yaml $(if $(ZONE),--zone $(ZONE),) $(if $(ALLOW_MANUAL_PENDING),--allow-manual-pending,)
+
+# Delegation - APPLY DNSSEC DS (separate step; only zones with dnssec: true)
+delegate-ds:
+\t@echo ""
+\t@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+\t@echo "  APPLYING DNSSEC DS PUBLICATION"
+\t@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+\t@echo ""
+\t@octodns-gitops-delegate --doit --step ds --config config.yaml $(if $(ZONE),--zone $(ZONE),) $(if $(ALLOW_MANUAL_PENDING),--allow-manual-pending,)
+
+# Validate DNSSEC delegation (read-only)
+dnssec:
+\t@octodns-gitops-dnssec --config config.yaml $(if $(ZONE),--zone $(ZONE),) $(if $(SCOPE),--scope $(SCOPE),)
+
+# Request a least-privilege OVH consumer key (ENV_PREFIX=OVH_AUTOPS)
+ovh-token:
+\t@octodns-gitops-ovh-token $(if $(ENV_PREFIX),--env-prefix $(ENV_PREFIX),)
 """
 
 

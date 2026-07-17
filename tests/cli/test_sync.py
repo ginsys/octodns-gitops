@@ -193,6 +193,35 @@ class TestFormatZoneChanges:
         assert "1 create" in result[0]
         assert "1 creates" not in result[0]
 
+    def test_shows_target_provider_in_header(self):
+        """When a target is present, it should appear in the header."""
+        zone_data = {
+            "name": "example.com.",
+            "target": "desec",
+            "creates": 7,
+            "updates": 0,
+            "deletes": 0,
+            "changes": ["+ A www ['1.2.3.4']"],
+        }
+        result = format_zone_changes(zone_data)
+
+        assert "example.com." in result[0]
+        assert "desec" in result[0]
+        assert "7 creates" in result[0]
+
+    def test_header_omits_target_when_absent(self):
+        """Without a target key the header is unchanged (backwards compatible)."""
+        zone_data = {
+            "name": "example.com.",
+            "creates": 1,
+            "updates": 0,
+            "deletes": 0,
+            "changes": ["+ A www"],
+        }
+        result = format_zone_changes(zone_data)
+
+        assert result[0] == "example.com. (1 create)"
+
 
 class TestDetectThresholdViolations:
     """Tests for detect_threshold_violations()."""
@@ -380,6 +409,70 @@ Some header text
 
         assert len(result) == 1
 
+    def test_captures_target_provider(self):
+        """The '* target (Provider)' header should be captured per zone."""
+        output = """
+* example.com.
+* desec (DesecProvider)
+*   Create <ARecord A 3600, www.example.com., ['1.2.3.4']> (zones)
+*   Summary: Creates=1, Updates=0, Deletes=0, Existing=5, Meta=False
+"""
+        result = parse_octodns_output(output)
+
+        assert len(result) == 1
+        assert result[0]["name"] == "example.com."
+        assert result[0]["target"] == "desec"
+        assert result[0]["provider"] == "DesecProvider"
+        assert result[0]["creates"] == 1
+
+    def test_captures_indented_target_header(self):
+        """Target headers may be indented ('*   name (Provider)') too."""
+        output = """
+* example.com.
+*   hetzner (HetznerProvider)
+*   Create <ARecord A 3600, www.example.com., ['1.2.3.4']> (zones)
+*   Summary: Creates=1, Updates=0, Deletes=0, Existing=5, Meta=False
+"""
+        result = parse_octodns_output(output)
+
+        assert len(result) == 1
+        assert result[0]["target"] == "hetzner"
+        assert result[0]["provider"] == "HetznerProvider"
+
+    def test_splits_targets_within_one_zone(self):
+        """A zone synced to two targets yields one entry per target."""
+        output = """
+* example.com.
+* hetzner (HetznerProvider)
+*   Update
+*     <ARecord A 1800, www.example.com., ['1.2.3.4']> ->
+*     <ARecord A 3600, www.example.com., ['1.2.3.4']> (zones)
+*   Summary: Creates=0, Updates=1, Deletes=0, Existing=5, Meta=False
+* desec (DesecProvider)
+*   Create <ARecord A 3600, www.example.com., ['1.2.3.4']> (zones)
+*   Summary: Creates=1, Updates=0, Deletes=0, Existing=0, Meta=False
+"""
+        result = parse_octodns_output(output)
+
+        assert len(result) == 2
+        assert result[0]["name"] == "example.com."
+        assert result[0]["target"] == "hetzner"
+        assert result[0]["updates"] == 1
+        assert result[1]["name"] == "example.com."
+        assert result[1]["target"] == "desec"
+        assert result[1]["creates"] == 1
+
+    def test_target_absent_without_header(self):
+        """Output without a target header still parses (target is None)."""
+        output = """
+* example.com.
+*   Summary: Creates=1, Updates=0, Deletes=0, Existing=5, Meta=False
+"""
+        result = parse_octodns_output(output)
+
+        assert len(result) == 1
+        assert result[0]["target"] is None
+
 
 class TestMain:
     """Tests for main() function."""
@@ -424,6 +517,45 @@ class TestMain:
         assert "example.com." in captured.out
         assert "1 create" in captured.out
 
+    def test_failure_domain_limit_error(self, mock_subprocess, capsys):
+        """A deSEC domain-limit 403 should get a specific, helpful message."""
+        mock_subprocess.return_value = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr=(
+                'DesecAPI API-Response: status code: 403 (expected 201), '
+                'content: {"detail":"Domain limit exceeded. Please contact '
+                'support to create additional domains."}'
+            ),
+        )
+
+        with patch("sys.argv", ["sync", "--config", "config.yaml", "--doit"]):
+            result = main()
+
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "domain limit" in captured.err.lower()
+        assert "Missing API credentials" not in captured.err
+
+    def test_failure_forbidden_without_missing_vars_shows_raw(
+        self, mock_subprocess, capsys
+    ):
+        """A 403 with all tokens set must surface the real error, not 'missing creds'."""
+        mock_subprocess.return_value = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="403 Client Error: Forbidden for url: https://desec.io/api/v1/",
+        )
+
+        # No config.yaml in cwd -> get_missing_env_vars() is empty (nothing missing).
+        with patch("sys.argv", ["sync", "--config", "config.yaml", "--doit"]):
+            result = main()
+
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "Missing API credentials" not in captured.err
+        assert "Forbidden" in captured.err
+
     def test_failure_credentials_error(self, mock_subprocess, capsys):
         """Should show credentials error message."""
         mock_subprocess.return_value = MagicMock(
@@ -437,10 +569,14 @@ class TestMain:
                 "octodns_gitops.cli.sync.is_credentials_error", return_value=True
             ):
                 with patch(
-                    "octodns_gitops.cli.sync.format_missing_credentials_error",
-                    return_value="Missing creds",
+                    "octodns_gitops.cli.sync.get_missing_env_vars",
+                    return_value={"HETZNER_TOKEN": "hetzner"},
                 ):
-                    result = main()
+                    with patch(
+                        "octodns_gitops.cli.sync.format_missing_credentials_error",
+                        return_value="Missing creds",
+                    ):
+                        result = main()
 
         assert result == 1
 

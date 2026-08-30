@@ -265,6 +265,13 @@ def _section(where: str, container: dict, key: str) -> dict:
 
 
 def _check_keys(where: str, given: dict, allowed: frozenset[str]) -> None:
+    # YAML 1.1 reads an unquoted `on:`/`yes:`/`no:` as a bool and a bare number as an int; such
+    # a key can never be a field, and sorting/joining it against str keys raised TypeError.
+    odd = [k for k in given if not isinstance(k, str)]
+    if odd:
+        raise ForwardEmailConfigError(
+            f"{where}: keys must be strings, got {', '.join(repr(k) for k in odd)} (quote YAML words such as `on`)"
+        )
     unknown = sorted(set(given) - allowed)
     if unknown:
         raise ForwardEmailConfigError(f"{where}: unknown or read-only field(s): {', '.join(unknown)}")

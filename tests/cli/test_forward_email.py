@@ -438,6 +438,15 @@ class TestDrift:
         assert rc == 1
         assert "has_smtp" in out
 
+    def test_plan_errors_are_drift_findings_not_silently_clean(self, tmp_path):
+        # A file plan/apply refuses (recipients: [] on a non-mailbox) must not read "clean" here.
+        _write_domain_file(tmp_path, "x.be", "aliases:\n  - {name: a, recipients: []}\n")
+        client = FakeClient([_live_domain("x.be")], {"x.be": []})
+        rc, out = _run(_cfg(tmp_path), client, mode="drift", zones=self._zones(tmp_path))
+        assert rc == 1
+        assert "alias: alias a@x.be has no recipients" in out
+        assert "clean" not in out
+
     def test_domain_without_zone_file_is_informational(self, tmp_path):
         _write_domain_file(tmp_path, "x.be", "aliases: []\n")
         client = FakeClient([_live_domain("x.be")], {"x.be": []})
@@ -525,6 +534,17 @@ class TestConfigPlumbing:
             main()
         assert e.value.code == 2
         assert "not allowed with" in capsys.readouterr().err
+
+    def test_main_rejects_dry_run_with_export(self, tmp_path, monkeypatch, capsys):
+        # `--export` writes the domain files whatever else is passed: accepting `--dry-run`
+        # alongside it would promise a preview and overwrite every selected file.
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("forward_email:\n  domains: [x.be]\n")
+        monkeypatch.setattr("sys.argv", ["x", "--config", str(cfg), "--export", "--dry-run"])
+        with pytest.raises(SystemExit) as e:
+            main()
+        assert e.value.code == 2
+        assert "--dry-run" in capsys.readouterr().err
 
     @pytest.mark.parametrize("mode", ["--export", "--drift"])
     def test_main_rejects_prune_in_a_mode_that_never_prunes(self, tmp_path, monkeypatch, capsys, mode):

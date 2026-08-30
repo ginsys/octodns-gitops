@@ -213,6 +213,27 @@ class TestTypeValidation:
         with pytest.raises(ForwardEmailConfigError, match=f"duplicate key {needle} at line [0-9]+"):
             load_domain_file(p, "x.be")
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "on: true\naliases: []\n",
+            "settings:\n  on: true\naliases: []\n",
+            "aliases:\n  - {name: a, recipients: [x@y.z], on: 1}\n",
+            "aliases:\n  - {name: a, recipients: [x@y.z], vacation_responder: {is_enabled: true, 1: x}}\n",
+        ],
+    )
+    def test_non_string_keys_are_a_config_error_not_a_traceback(self, tmp_path, body):
+        # YAML 1.1 reads an unquoted `on:` as the boolean True; sorting it against str keys
+        # raised TypeError inside the unknown-key check (traceback instead of rc 2/1).
+        p = _write(tmp_path, "x.be.yaml", body)
+        with pytest.raises(ForwardEmailConfigError, match="keys must be strings"):
+            load_domain_file(p, "x.be")
+
+    def test_non_string_keys_in_the_block_are_a_config_error(self, tmp_path):
+        cfg = _write(tmp_path, "config.yaml", "forward_email:\n  domains: [x.be]\n  on: x\n")
+        with pytest.raises(ForwardEmailConfigError, match="keys must be strings.*True"):
+            load_forward_email(str(cfg))
+
     def test_duplicate_keys_in_config_yaml_are_an_error(self, tmp_path):
         cfg = _write(tmp_path, "config.yaml", "forward_email:\n  domains: [x.be]\nforward_email:\n  domains: [y.be]\n")
         with pytest.raises(ForwardEmailConfigError, match="duplicate key 'forward_email'"):

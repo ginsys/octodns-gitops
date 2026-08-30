@@ -15,7 +15,9 @@ Exit codes: 0 nothing wrong; 1 a drift finding (`--drift` only — plan/apply pr
 mismatches but do not fail on them, they are read-only), a refused prune, a blocked alias, or any
 per-domain error (a bad per-domain file included — the other domains still run); 2 the invocation
 itself is invalid (the `forward_email:` block, a missing token, an unclaimed `--domain`, `--prune`
-outside plan/apply).
+outside plan/apply, `--dry-run` with `--export`). In `--drift` an alias the plan would refuse on
+the file alone (no recipients and no mailbox) is a finding as well; guards that need live state
+(the mailbox update guard, prune) are plan/apply only, since drift never reads the live aliases.
 """
 
 from __future__ import annotations
@@ -234,6 +236,8 @@ def run(
                 findings = []
                 plan = plan_domain(desired, cfg, live, [], prune=False)
                 findings += [(m.field, f"{m.field} is {m.live!r}, expected {m.desired!r}") for m in plan.expect_mismatch]
+                # A file plan/apply refuses is drift too — "clean" here must not contradict `make mail-plan`.
+                findings += [("alias", e) for e in plan.errors]
                 zone_files: list[Path] = []
                 try:
                     zone_dirs = zones.directories(domain) if zones else []
@@ -293,6 +297,9 @@ def main() -> int:
     if args.prune and (args.export or args.drift):
         # Accepted-and-ignored would read as a prune that silently did nothing.
         p.error("--prune only applies to plan/apply; --export and --drift never delete anything")
+    if args.dry_run and args.export:
+        # --export always writes the files; a "dry run" of it would overwrite every selected one.
+        p.error("--dry-run cannot be combined with --export, which always writes the domain files")
 
     try:
         cfg = load_forward_email(args.config)

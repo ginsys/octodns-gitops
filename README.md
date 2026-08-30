@@ -51,6 +51,71 @@ filters:
 - `octodns-gitops-drift` - Check for drift between live DNS and local zones
 - `octodns-gitops-report` - Query nameservers and show consistency report
 - `octodns-gitops-init` - Generate Makefile for dns-zones repositories
+- `octodns-gitops-forwardemail` - Reconcile Forward Email domain settings and aliases with per-domain files (see below)
+
+### Forward Email account settings (opt-in)
+
+A dns-zones repo can also own the *account* side of its mail domains at [Forward Email](https://forwardemail.net):
+domain settings and aliases, kept in `mail/forward-email/<domain>.yaml` and reconciled through the REST API.
+Opt in with a top-level `forward_email:` block in `config.yaml` (ignored by octoDNS, like `delegation:`):
+
+```yaml
+forward_email:
+  token: env/FORWARD_EMAIL_API_TOKEN   # env/ reference only, never a literal
+  directory: ./mail/forward-email      # default
+  defaults:                            # optional repo-level overrides of the package defaults
+    settings: {}                       # API-writable domain fields
+    expect: {}                         # read-only fields, drift-checked only
+    alias: {}                          # alias field defaults
+  domains:                             # the ownership boundary: nothing outside it is ever touched
+    - example.com
+```
+
+One file per claimed domain; everything equal to the resolved defaults is omitted:
+
+```yaml
+domain: example.com
+settings:
+  ignore_mx_check: true          # only fields the API can write
+expect:
+  has_newsletter: true           # FE-staff-set fields we want reported on mismatch
+aliases:
+  - name: hello
+    recipients: [you@example.org]
+  - name: '/^([\w\-\.]+)$/'      # regex names must be single-quoted
+    recipients: ['$1@example.org']
+    is_enabled: false
+```
+
+Contract:
+
+- `make mail-plan` is a dry run; `make mail-apply` writes. `DOMAIN=example.com` scopes either.
+- Domains are **never created or deleted** from git; a claimed domain missing from the account is an error.
+- `PRUNE=1` (the literal `1`; `0`/`false` do not prune) deletes aliases absent from git, inside
+  claimed domains only, after a second listing agrees with the first. An alias with
+  `has_imap: true` or stored mail is a mailbox: it is never pruned and blocks the run until it is
+  added to git **with `has_imap: true`** or removed in the web UI. The same guard covers updates:
+  a declared alias that merely omits `has_imap` never turns IMAP off on a live mailbox — write
+  `has_imap: true` to keep it, or `has_imap: false` to turn it off deliberately.
+- `make mail-export` writes the files from live state (bootstrap, or re-baseline after a deliberate
+  web-UI change). A freshly exported file must plan as **zero changes**. Write-only settings already
+  declared in the file being overwritten are preserved, since the API cannot return them.
+- `make mail-drift` compares FE's generated DNS records (DKIM key, `fe-bounces` CNAME, verification
+  TXT, the DMARC `rua` address) with the repo's zone file, and reports read-only expectation
+  mismatches. Unless `ignore_mx_check: true`, the apex MX must be exactly FE's two exchangers at
+  one shared preference — any other exchanger is a finding. The zone file is read from every
+  YamlProvider the zone's `sources:` names (merged, as octoDNS does); with several YamlProviders
+  and no such entry the domain is reported as ambiguous rather than unchecked. Exit 1 on any
+  finding. A claimed domain with no zone file in this repo is a supported layout, but
+  `mail-drift` then proves nothing about its DNS records: it prints "not checked" and exits 0.
+- `aliases:` is always an explicit list (`aliases: []` for a domain with none) and every alias
+  declares `recipients:`; an absent key is an error, never "empty" — with `PRUNE=1` that would
+  have meant "delete everything". `recipients: []` is only valid for a mailbox (`has_imap`
+  resolving to true): an alias that would deliver nowhere is an error. A duplicated YAML key is an
+  error, never last-wins. `vacation_responder` takes exactly `is_enabled` (bool, required),
+  `subject` and `message`.
+- `max_quota_per_alias` and `bounce_webhook` cannot be read back from the API: they are sent with
+  every domain update but never produce a diff on their own.
 
 ## Quick Start with mise
 

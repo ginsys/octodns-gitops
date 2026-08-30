@@ -49,6 +49,7 @@ octodns-gitops-init = "octodns_gitops.bootstrap.makefile:main"
 octodns-gitops-delegate = "octodns_gitops.cli.delegate:main"
 octodns-gitops-dnssec = "octodns_gitops.cli.dnssec:main"
 octodns-gitops-ovh-token = "octodns_gitops.cli.ovh_token:main"
+octodns-gitops-forwardemail = "octodns_gitops.cli.forward_email:main"
 
 [tool.hatch.version]
 # Version is derived from git tags (CalVer YYMM.N, e.g. 2606.1). Untagged

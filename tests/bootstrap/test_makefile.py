@@ -1,10 +1,9 @@
 """Tests for bootstrap/makefile.py"""
 
-import pytest
 from io import StringIO
 from unittest.mock import patch
 
-from octodns_gitops.bootstrap.makefile import main, MAKEFILE_TEMPLATE
+from octodns_gitops.bootstrap.makefile import MAKEFILE_TEMPLATE, main
 
 
 class TestMain:
@@ -45,6 +44,16 @@ class TestMain:
         """The Makefile should support ZONE= filtering."""
         assert "ZONE=" in MAKEFILE_TEMPLATE
         assert "--zone $(ZONE)" in MAKEFILE_TEMPLATE
+
+    def test_makefile_contains_forward_email_targets(self):
+        """mail-* targets wrap octodns-gitops-forwardemail; apply is the only --doit."""
+        for target in ("mail-plan:", "mail-apply:", "mail-drift:", "mail-export:"):
+            assert target in MAKEFILE_TEMPLATE
+        assert MAKEFILE_TEMPLATE.count("octodns-gitops-forwardemail --doit") == 1
+        assert "--domain $(DOMAIN)" in MAKEFILE_TEMPLATE
+        # PRUNE=0 / PRUNE=false must not prune: only the literal `1` the help text documents.
+        assert MAKEFILE_TEMPLATE.count("$(if $(filter 1,$(PRUNE)),--prune,)") == 2
+        assert "$(if $(PRUNE)," not in MAKEFILE_TEMPLATE
 
     def test_makefile_supports_force_flag(self):
         """The Makefile should support FORCE=1 for apply."""

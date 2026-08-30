@@ -146,7 +146,7 @@ ovh-token:
 
 # Forward Email - DRY-RUN diff of account settings and aliases (DOMAIN=, PRUNE=1)
 mail-plan:
-\t@octodns-gitops-forwardemail --config config.yaml $(if $(DOMAIN),--domain $(DOMAIN),) $(if $(PRUNE),--prune,)
+\t@octodns-gitops-forwardemail --config config.yaml $(if $(DOMAIN),--domain $(DOMAIN),) $(if $(filter 1,$(PRUNE)),--prune,)
 
 # Forward Email - APPLY settings and alias changes (never creates or deletes domains)
 mail-apply:
@@ -155,7 +155,7 @@ mail-apply:
 \t@echo "  APPLYING FORWARD EMAIL ACCOUNT CHANGES"
 \t@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 \t@echo ""
-\t@octodns-gitops-forwardemail --doit --config config.yaml $(if $(DOMAIN),--domain $(DOMAIN),) $(if $(PRUNE),--prune,)
+\t@octodns-gitops-forwardemail --doit --config config.yaml $(if $(DOMAIN),--domain $(DOMAIN),) $(if $(filter 1,$(PRUNE)),--prune,)
 
 # Forward Email - FE-generated DNS records and read-only expectations vs the repo
 mail-drift:

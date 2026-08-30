@@ -175,6 +175,35 @@ class ForwardEmailConfigError(ValueError):
     """Raised when the block or a domain file is invalid."""
 
 
+class DuplicateKeyError(yaml.YAMLError):
+    """A mapping key given twice. PyYAML keeps the last one silently; a file with two `aliases:`
+    blocks would plan — and with --prune, delete — against the one the author never meant."""
+
+
+class _StrictLoader(yaml.SafeLoader):
+    def construct_mapping(self, node, deep=False):
+        seen: dict = {}
+        for key_node, _value_node in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                continue  # `<<: *anchor` pairs are flattened by SafeLoader and may override by design
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                hash(key)
+            except TypeError:
+                continue  # SafeLoader reports the unhashable key itself
+            if key in seen:
+                raise DuplicateKeyError(
+                    f"duplicate key {key!r} at line {key_node.start_mark.line + 1} (first at line {seen[key]})"
+                )
+            seen[key] = key_node.start_mark.line + 1
+        return super().construct_mapping(node, deep=deep)
+
+
+def load_yaml_strict(stream):
+    """`yaml.safe_load` that rejects duplicate mapping keys (`DuplicateKeyError`, a `YAMLError`)."""
+    return yaml.load(stream, Loader=_StrictLoader)
+
+
 @dataclass(frozen=True)
 class ForwardEmailConfig:
     """Resolved repo-level configuration (package defaults merged with repo overrides)."""
@@ -215,7 +244,7 @@ def _load_yaml(path: Path) -> dict:
         raise ForwardEmailConfigError(f"file not found: {path}")
     try:
         with open(path) as f:
-            data = yaml.safe_load(f) or {}
+            data = load_yaml_strict(f) or {}
     except (OSError, yaml.YAMLError) as e:
         raise ForwardEmailConfigError(f"{path}: {type(e).__name__}: {e}") from e
     if not isinstance(data, dict):

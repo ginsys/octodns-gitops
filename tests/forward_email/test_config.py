@@ -198,6 +198,26 @@ class TestTypeValidation:
         with pytest.raises(ForwardEmailConfigError, match="dir.yaml"):
             load_domain_file(d, "x.be")
 
+    @pytest.mark.parametrize(
+        ("body", "needle"),
+        [
+            ("aliases:\n  - {name: keep, recipients: [x@y.z]}\naliases:\n  - {name: b, recipients: [x@y.z]}\n", "'aliases'"),
+            ("aliases:\n  - name: a\n    recipients: [x@y.z]\n    recipients: [z@y.x]\n", "'recipients'"),
+            ("settings:\n  retention_days: 0\nsettings:\n  retention_days: 30\naliases: []\n", "'settings'"),
+        ],
+    )
+    def test_duplicate_mapping_keys_are_an_error_not_last_wins(self, tmp_path, body, needle):
+        # PyYAML silently keeps the last duplicate: with --prune the aliases of the first
+        # `aliases:` block would be deleted. The error names the key and the line.
+        p = _write(tmp_path, "x.be.yaml", body)
+        with pytest.raises(ForwardEmailConfigError, match=f"duplicate key {needle} at line [0-9]+"):
+            load_domain_file(p, "x.be")
+
+    def test_duplicate_keys_in_config_yaml_are_an_error(self, tmp_path):
+        cfg = _write(tmp_path, "config.yaml", "forward_email:\n  domains: [x.be]\nforward_email:\n  domains: [y.be]\n")
+        with pytest.raises(ForwardEmailConfigError, match="duplicate key 'forward_email'"):
+            load_forward_email(str(cfg))
+
     def test_domains_must_be_strings(self, tmp_path):
         cfg = _write(tmp_path, "config.yaml", "forward_email:\n  domains: [123]\n")
         with pytest.raises(ForwardEmailConfigError, match="string"):

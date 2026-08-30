@@ -26,12 +26,31 @@ class DriftFinding:
     message: str
 
 
+def merge_zones(zones: list[dict]) -> dict:
+    """One record set from several YAML sources of the same zone (octoDNS merges its sources):
+    entries under the same name concatenate, so `_records` sees all of them."""
+    merged: dict = {}
+    for zone in zones:
+        for name, entry in zone.items():
+            if name in merged:
+                prev = merged[name]
+                merged[name] = (prev if isinstance(prev, list) else [prev]) + (
+                    entry if isinstance(entry, list) else [entry]
+                )
+            else:
+                merged[name] = entry
+    return merged
+
+
 def _records(zone: dict, name: str, rtype: str) -> list[dict]:
-    entry = zone.get(name)
-    if entry is None:
-        return []
-    entries = entry if isinstance(entry, list) else [entry]
-    return [r for r in entries if r.get("type") == rtype]
+    """Records of `name`/`rtype`; DNS names are case-insensitive, so the key match is too."""
+    want = name.lower()
+    entries: list = []
+    for key, entry in zone.items():
+        if entry is None or str(key).lower() != want:
+            continue
+        entries.extend(entry if isinstance(entry, list) else [entry])
+    return [r for r in entries if isinstance(r, dict) and r.get("type") == rtype]
 
 
 def _values(zone: dict, name: str, rtype: str) -> list:
@@ -93,8 +112,9 @@ def check_zone(live_domain: dict, zone: dict, *, expect_mx: bool) -> list[DriftF
 
     rp = recs.get("return_path")
     if rp:
-        got = [v.rstrip(".") for v in _values(zone, rp["name"], "CNAME")]
-        if rp["value"].rstrip(".") not in got:
+        # Hostnames are case-insensitive: `ForwardEmail.NET.` is the same target.
+        got = [str(v).rstrip(".").lower() for v in _values(zone, rp["name"], "CNAME")]
+        if rp["value"].rstrip(".").lower() not in got:
             findings.append(DriftFinding("return_path", f"{rp['name']} CNAME: expected {rp['value']}, zone has {got}"))
 
     token = live_domain.get("verification_record")

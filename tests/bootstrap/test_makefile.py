@@ -51,7 +51,9 @@ class TestMain:
             assert target in MAKEFILE_TEMPLATE
         assert MAKEFILE_TEMPLATE.count("octodns-gitops-forwardemail --doit") == 1
         assert "--domain $(DOMAIN)" in MAKEFILE_TEMPLATE
-        assert "$(if $(PRUNE),--prune,)" in MAKEFILE_TEMPLATE
+        # PRUNE=0 / PRUNE=false must not prune: only the literal `1` the help text documents.
+        assert MAKEFILE_TEMPLATE.count("$(if $(filter 1,$(PRUNE)),--prune,)") == 2
+        assert "$(if $(PRUNE)," not in MAKEFILE_TEMPLATE
 
     def test_makefile_supports_force_flag(self):
         """The Makefile should support FORCE=1 for apply."""

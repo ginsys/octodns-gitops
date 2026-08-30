@@ -91,22 +91,29 @@ Contract:
 
 - `make mail-plan` is a dry run; `make mail-apply` writes. `DOMAIN=example.com` scopes either.
 - Domains are **never created or deleted** from git; a claimed domain missing from the account is an error.
-- `PRUNE=1` deletes aliases absent from git, inside claimed domains only, after a second listing
-  agrees with the first. An alias with `has_imap: true` or stored mail is a mailbox: it is never
-  pruned and blocks the run until it is added to git or removed in the web UI.
+- `PRUNE=1` (the literal `1`; `0`/`false` do not prune) deletes aliases absent from git, inside
+  claimed domains only, after a second listing agrees with the first. An alias with
+  `has_imap: true` or stored mail is a mailbox: it is never pruned and blocks the run until it is
+  added to git **with `has_imap: true`** or removed in the web UI. The same guard covers updates:
+  a declared alias that merely omits `has_imap` never turns IMAP off on a live mailbox — write
+  `has_imap: true` to keep it, or `has_imap: false` to turn it off deliberately.
 - `make mail-export` writes the files from live state (bootstrap, or re-baseline after a deliberate
   web-UI change). A freshly exported file must plan as **zero changes**. Write-only settings already
   declared in the file being overwritten are preserved, since the API cannot return them.
 - `make mail-drift` compares FE's generated DNS records (DKIM key, `fe-bounces` CNAME, verification
   TXT, the DMARC `rua` address) with the repo's zone file, and reports read-only expectation
   mismatches. Unless `ignore_mx_check: true`, the apex MX must be exactly FE's two exchangers at
-  one shared preference — any other exchanger is a finding. The zone file is looked up in the
-  YamlProvider the zone's `sources:` names; with several YamlProviders and no such entry the
-  domain is reported as ambiguous rather than unchecked. Exit 1 on any finding.
+  one shared preference — any other exchanger is a finding. The zone file is read from every
+  YamlProvider the zone's `sources:` names (merged, as octoDNS does); with several YamlProviders
+  and no such entry the domain is reported as ambiguous rather than unchecked. Exit 1 on any
+  finding. A claimed domain with no zone file in this repo is a supported layout, but
+  `mail-drift` then proves nothing about its DNS records: it prints "not checked" and exits 0.
 - `aliases:` is always an explicit list (`aliases: []` for a domain with none) and every alias
   declares `recipients:`; an absent key is an error, never "empty" — with `PRUNE=1` that would
-  have meant "delete everything". `vacation_responder` takes exactly `is_enabled` (bool,
-  required), `subject` and `message`.
+  have meant "delete everything". `recipients: []` is only valid for a mailbox (`has_imap`
+  resolving to true): an alias that would deliver nowhere is an error. A duplicated YAML key is an
+  error, never last-wins. `vacation_responder` takes exactly `is_enabled` (bool, required),
+  `subject` and `message`.
 - `max_quota_per_alias` and `bounce_webhook` cannot be read back from the API: they are sent with
   every domain update but never produce a diff on their own.
 

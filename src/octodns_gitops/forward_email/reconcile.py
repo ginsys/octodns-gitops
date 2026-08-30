@@ -12,7 +12,11 @@ Rules that are easy to get wrong, all decided in the 2026-08-30 audit:
   default". A live value differing from the desired one is reset with a blank PUT.
 - `labels` is server-applied (`catch-all`): never compared here, rejected by the config loader.
 - A prune never deletes an alias with `has_imap` or stored mail: that is a mailbox. Such an
-  alias missing from git is an error that blocks the run.
+  alias missing from git is an error that blocks the run — and so is an update that would turn
+  IMAP off only because the file omits `has_imap` (the default is `false`); an explicit
+  `has_imap: false` is intent.
+- An alias with no recipients must be a mailbox (`has_imap` resolving to true); otherwise mail to
+  it is accepted and delivered nowhere, so it is an error, never a create or update.
 """
 
 from __future__ import annotations
@@ -200,6 +204,22 @@ def plan_domain(
     for want in desired.aliases:
         resolved = _resolve_alias(want, cfg.alias)
         live = live_by_name.get(want.name)
+        # The prune guard below says "add it to git"; without this, doing exactly that (and
+        # omitting `has_imap`) would PUT has_imap=false on the next apply. Decidable only here,
+        # where both the resolved default and the live alias are known.
+        if live is not None and live.get("has_imap") and want.has_imap is None and not resolved["has_imap"]:
+            plan.errors.append(
+                f"refusing to disable IMAP on {want.name}@{desired.domain}: it is a mailbox "
+                f"(has_imap={live.get('has_imap')}, storage_used={live.get('storage_used')}) and the file "
+                "does not declare has_imap; declare `has_imap: true` to keep it or `has_imap: false` to turn it off"
+            )
+            continue
+        if not resolved["recipients"] and not resolved["has_imap"]:
+            plan.errors.append(
+                f"alias {want.name}@{desired.domain} has no recipients and no mailbox (has_imap resolves to "
+                "false): mail to it would be accepted and delivered nowhere; give it recipients or `has_imap: true`"
+            )
+            continue
         if live is None:
             plan.aliases.append(AliasChange("create", want.name, None, _alias_body(resolved), ["new"]))
             continue
@@ -218,7 +238,7 @@ def plan_domain(
             plan.errors.append(
                 f"refusing to prune {live['name']}@{desired.domain}: it is a mailbox "
                 f"(has_imap={live.get('has_imap')}, storage_used={live.get('storage_used')}); "
-                "add it to git or delete it in the web UI"
+                "add it to git with `has_imap: true` or delete it in the web UI"
             )
             continue
         plan.aliases.append(AliasChange("delete", live["name"], live.get("id"), {}, ["prune"]))

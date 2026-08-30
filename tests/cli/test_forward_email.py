@@ -176,6 +176,15 @@ class TestPlan:
         assert rc == 2
         assert "other.be" in out
 
+    def test_expectation_mismatch_is_printed_but_is_not_a_plan_failure(self, tmp_path):
+        # Plan/apply are about writes; a read-only mismatch is a drift finding (rc 1 there only).
+        _write_domain_file(tmp_path, "x.be", "aliases: []\n")
+        client = FakeClient([_live_domain("x.be", has_smtp=False)], {"x.be": []})
+        rc, out = _run(_cfg(tmp_path), client, doit=True)
+        assert rc == 0
+        assert "expect: has_smtp is False, expected True" in out
+        assert client.writes() == []
+
 
 class TestApply:
     def test_doit_sends_settings_and_alias_writes(self, tmp_path):
@@ -346,11 +355,66 @@ class TestDrift:
         """
     )
 
+    # The same zone split over two YamlProviders (octoDNS merges sources): apex MX, DKIM and the
+    # return-path CNAME in one, the apex verification TXT and _dmarc in the other.
+    ZONE_A = textwrap.dedent(
+        """
+        '':
+          - type: MX
+            values:
+              - {exchange: mx1.forwardemail.net., preference: 10}
+              - {exchange: mx2.forwardemail.net., preference: 10}
+        fe-1._domainkey:
+          type: TXT
+          value: v=DKIM1\\; k=rsa\\; p=MIIBIjANBg\\;
+        fe-bounces:
+          type: CNAME
+          value: forwardemail.net.
+        """
+    )
+    ZONE_B = textwrap.dedent(
+        """
+        '':
+          - type: TXT
+            values:
+              - forward-email-site-verification=TOKEN
+        _dmarc:
+          type: TXT
+          value: v=DMARC1\\; p=quarantine\\; rua=mailto:dmarc-1@forwardemail.net\\;
+        """
+    )
+
     def _zones(self, tmp_path, text=None):
         zd = tmp_path / "zones"
         zd.mkdir()
         (zd / "x.be.yaml").write_text(text or self.ZONE)
         return ZoneLookup.single(zd)
+
+    def test_zone_split_over_several_yaml_sources_is_merged_for_the_check(self, tmp_path):
+        # Inspecting only the first named source would flag _dmarc/verification as missing;
+        # only the second, everything else. Same-name entries (the apex) concatenate.
+        _write_domain_file(tmp_path, "x.be", "aliases: []\n")
+        client = FakeClient([_live_domain("x.be")], {"x.be": []})
+        a, b = tmp_path / "a", tmp_path / "b"
+        for d, text in ((a, self.ZONE_A), (b, self.ZONE_B)):
+            d.mkdir()
+            (d / "x.be.yaml").write_text(text)
+        rc, out = _run(_cfg(tmp_path), client, mode="drift", zones=ZoneLookup({"a": a, "b": b}, {"x.be": ["a", "b"]}))
+        assert rc == 0, out
+        assert "clean" in out
+        for only in ("a", "b"):
+            rc, out = _run(_cfg(tmp_path), client, mode="drift", zones=ZoneLookup({"a": a, "b": b}, {"x.be": [only]}))
+            assert rc == 1, out
+
+    def test_named_sources_without_a_zone_file_are_not_checked(self, tmp_path):
+        _write_domain_file(tmp_path, "x.be", "aliases: []\n")
+        client = FakeClient([_live_domain("x.be")], {"x.be": []})
+        a, b = tmp_path / "a", tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        rc, out = _run(_cfg(tmp_path), client, mode="drift", zones=ZoneLookup({"a": a, "b": b}, {"x.be": ["a", "b"]}))
+        assert rc == 0
+        assert "no zone file" in out
 
     def test_clean_zone_and_matching_expectations_exit_0(self, tmp_path):
         _write_domain_file(tmp_path, "x.be", "aliases: []\n")
@@ -413,35 +477,38 @@ class TestConfigPlumbing:
             targets: [other]
           old.be.:
             sources: [legacy]
+          split.be.:
+            sources: [other, zones, legacy]
           cloud.be.:
             sources: [other]
         """
     )
 
-    def test_zone_directory_is_resolved_per_domain_from_the_zone_sources(self, tmp_path):
+    def test_zone_directories_are_resolved_per_domain_from_the_zone_sources(self, tmp_path):
         cfg = tmp_path / "config.yaml"
         cfg.write_text(self.CONFIG)
         zones = zone_lookup(str(cfg))
-        assert zones.directory("x.be") == tmp_path / "zones"
-        assert zones.directory("old.be") == Path("/abs/legacy")
-        # sourced from a non-YAML provider only: there is no zone file to compare
-        assert zones.directory("cloud.be") is None
+        assert zones.directories("x.be") == [tmp_path / "zones"]
+        assert zones.directories("old.be") == [Path("/abs/legacy")]
+        # every named YamlProvider, in source order; non-YAML sources have no file to compare
+        assert zones.directories("split.be") == [tmp_path / "zones", Path("/abs/legacy")]
+        assert zones.directories("cloud.be") == []
 
-    def test_zone_directory_falls_back_to_the_only_yaml_provider(self, tmp_path):
+    def test_zone_directories_fall_back_to_the_only_yaml_provider(self, tmp_path):
         cfg = tmp_path / "config.yaml"
         cfg.write_text("providers:\n  zones:\n    class: octodns.provider.yaml.YamlProvider\n    directory: ./zones\n")
-        assert zone_lookup(str(cfg)).directory("anything.be") == tmp_path / "zones"
+        assert zone_lookup(str(cfg)).directories("anything.be") == [tmp_path / "zones"]
         cfg.write_text("providers:\n  other:\n    class: octodns_hetzner.HetznerProvider\n")
-        assert zone_lookup(str(cfg)).directory("anything.be") is None
+        assert zone_lookup(str(cfg)).directories("anything.be") == []
 
-    def test_zone_directory_with_several_yaml_providers_and_no_source_is_ambiguous(self, tmp_path):
+    def test_zone_directories_with_several_yaml_providers_and_no_source_is_ambiguous(self, tmp_path):
         cfg = tmp_path / "config.yaml"
         cfg.write_text(self.CONFIG)
         with pytest.raises(AmbiguousZoneDirectory, match="2 YamlProviders"):
-            zone_lookup(str(cfg)).directory("unlisted.be")
+            zone_lookup(str(cfg)).directories("unlisted.be")
         # a wildcard zone entry names the source for every unlisted zone
         cfg.write_text(self.CONFIG + "  '*':\n    sources: [legacy]\n")
-        assert zone_lookup(str(cfg)).directory("unlisted.be") == Path("/abs/legacy")
+        assert zone_lookup(str(cfg)).directories("unlisted.be") == [Path("/abs/legacy")]
 
     def test_main_without_opt_in_block_is_a_noop(self, tmp_path, monkeypatch, capsys):
         cfg = tmp_path / "config.yaml"
@@ -458,6 +525,17 @@ class TestConfigPlumbing:
             main()
         assert e.value.code == 2
         assert "not allowed with" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("mode", ["--export", "--drift"])
+    def test_main_rejects_prune_in_a_mode_that_never_prunes(self, tmp_path, monkeypatch, capsys, mode):
+        # Accepted-and-ignored would make `--drift --prune` a scary command that does nothing.
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("forward_email:\n  domains: [x.be]\n")
+        monkeypatch.setattr("sys.argv", ["x", "--config", str(cfg), mode, "--prune"])
+        with pytest.raises(SystemExit) as e:
+            main()
+        assert e.value.code == 2
+        assert "--prune" in capsys.readouterr().err
 
     @pytest.mark.parametrize("text", ["forward_email: [\n", "forward_email:\n  domains: [x.be]\n  directory: 5\n"])
     def test_main_reports_malformed_config_as_rc_2_not_a_traceback(self, tmp_path, monkeypatch, capsys, text):

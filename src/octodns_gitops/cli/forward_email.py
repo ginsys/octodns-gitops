@@ -11,9 +11,11 @@ Modes:
   --export       write `<directory>/<domain>.yaml` from live state (bootstrap / re-baseline)
   --drift        compare FE's generated DNS records and read-only expectations with the repo
 
-Exit codes: 0 nothing wrong; 1 a finding, a refused prune, or any per-domain error (a bad
-per-domain file included — the other domains still run); 2 the invocation itself is invalid
-(the `forward_email:` block, a missing token, an unclaimed `--domain`).
+Exit codes: 0 nothing wrong; 1 a drift finding (`--drift` only — plan/apply print `expect:`
+mismatches but do not fail on them, they are read-only), a refused prune, a blocked alias, or any
+per-domain error (a bad per-domain file included — the other domains still run); 2 the invocation
+itself is invalid (the `forward_email:` block, a missing token, an unclaimed `--domain`, `--prune`
+outside plan/apply).
 """
 
 from __future__ import annotations
@@ -25,8 +27,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
-import yaml
-
 from octodns_gitops.forward_email.api import ForwardEmailApiError, ForwardEmailClient
 from octodns_gitops.forward_email.config import (
     WRITE_ONLY_SETTINGS,
@@ -34,8 +34,9 @@ from octodns_gitops.forward_email.config import (
     ForwardEmailConfigError,
     load_domain_file,
     load_forward_email,
+    load_yaml_strict,
 )
-from octodns_gitops.forward_email.drift import check_zone
+from octodns_gitops.forward_email.drift import check_zone, merge_zones
 from octodns_gitops.forward_email.export import export_domain
 from octodns_gitops.forward_email.reconcile import DomainPlan, plan_domain
 
@@ -59,14 +60,14 @@ class ZoneLookup:
     def single(cls, directory: Path) -> ZoneLookup:
         return cls({"zones": directory}, {})
 
-    def directory(self, domain: str) -> Path | None:
-        """The zone directory for `domain`; None when it has no zone file in this repo."""
+    def directories(self, domain: str) -> list[Path]:
+        """The zone directories for `domain`, in `sources:` order; empty when it has no zone file
+        in this repo. octoDNS merges every source, so drift must read every YAML one."""
         named = self.sources.get(domain, self.sources.get("*"))
         if named is not None:
-            yaml_named = [p for p in named if p in self.yaml_dirs]
-            return self.yaml_dirs[yaml_named[0]] if yaml_named else None
+            return [self.yaml_dirs[p] for p in named if p in self.yaml_dirs]
         if len(self.yaml_dirs) <= 1:
-            return next(iter(self.yaml_dirs.values()), None)
+            return list(self.yaml_dirs.values())
         raise AmbiguousZoneDirectory(
             f"ambiguous: {len(self.yaml_dirs)} YamlProviders ({', '.join(sorted(self.yaml_dirs))}) and "
             f"zones.{domain}.sources does not name one"
@@ -77,7 +78,7 @@ def zone_lookup(config_path: str) -> ZoneLookup:
     """Parse the octoDNS `providers:`/`zones:` blocks; directories resolve relative to config.yaml."""
     cfg_file = Path(config_path)
     with open(cfg_file) as f:
-        cfg = yaml.safe_load(f) or {}
+        cfg = load_yaml_strict(f) or {}
     base = cfg_file.resolve().parent
     yaml_dirs: dict[str, Path] = {}
     providers = cfg.get("providers")
@@ -173,7 +174,7 @@ def _preserved_write_only(path: Path) -> dict:
     if not path.exists():
         return {}
     with open(path) as f:
-        existing = yaml.safe_load(f) or {}
+        existing = load_yaml_strict(f) or {}
     settings = existing.get("settings") if isinstance(existing, dict) else None
     if not isinstance(settings, dict):
         return {}
@@ -233,28 +234,29 @@ def run(
                 findings = []
                 plan = plan_domain(desired, cfg, live, [], prune=False)
                 findings += [(m.field, f"{m.field} is {m.live!r}, expected {m.desired!r}") for m in plan.expect_mismatch]
-                zone_file = None
+                zone_files: list[Path] = []
                 try:
-                    zone_dir = zones.directory(domain) if zones else None
+                    zone_dirs = zones.directories(domain) if zones else []
                 except AmbiguousZoneDirectory as e:
                     # A finding, not "not checked": rc 0 here would hide a never-compared zone file.
                     findings.append(("zone", f"{e}; DNS records not compared"))
                 else:
-                    zone_file = zone_dir / f"{domain}.yaml" if zone_dir else None
-                    if zone_file is None or not zone_file.exists():
-                        zone_file = None
+                    zone_files = [p for p in (d / f"{domain}.yaml" for d in zone_dirs) if p.exists()]
+                    if not zone_files:
                         out.write(f"{domain:<28} no zone file in this repo; DNS records not checked\n")
-                if zone_file is not None:
-                    with open(zone_file) as f:
-                        zone = yaml.safe_load(f) or {}
+                if zone_files:
+                    parts = []
+                    for zone_file in zone_files:
+                        with open(zone_file) as f:
+                            parts.append(load_yaml_strict(f) or {})
                     settings = {**cfg.settings, **desired.settings}
-                    for fnd in check_zone(live, zone, expect_mx=not settings.get("ignore_mx_check")):
+                    for fnd in check_zone(live, merge_zones(parts), expect_mx=not settings.get("ignore_mx_check")):
                         findings.append((fnd.field, fnd.message))
                 if findings:
                     rc = 1
                     out.write(f"{domain:<28} {len(findings)} finding(s)\n")
                     out.writelines(f"  {field}: {msg}\n" for field, msg in findings)
-                elif zone_file is not None:
+                elif zone_files:
                     out.write(f"{domain:<28} clean\n")
                 continue
 
@@ -288,6 +290,9 @@ def main() -> int:
     g.add_argument("--export", action="store_true", help="Write per-domain files from live state")
     g.add_argument("--drift", action="store_true", help="Check FE DNS records and expectations against the repo")
     args = p.parse_args()
+    if args.prune and (args.export or args.drift):
+        # Accepted-and-ignored would read as a prune that silently did nothing.
+        p.error("--prune only applies to plan/apply; --export and --drift never delete anything")
 
     try:
         cfg = load_forward_email(args.config)

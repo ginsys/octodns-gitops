@@ -300,6 +300,94 @@ class TestPrune:
         assert "box" in plan.errors[0]
 
 
+class TestMailboxUpdate:
+    """The prune guard's own remedy ("add it to git") must not walk the operator into a PUT that
+    turns IMAP off: an alias declared without `has_imap` resolves to the default `false`."""
+
+    def test_omitted_has_imap_never_disables_imap_on_a_live_mailbox(self):
+        plan = plan_domain(
+            _desired([DesiredAlias("box", [])]),
+            _cfg(),
+            _live_domain(),
+            [_live_alias("box", recipients=[], has_imap=True, storage_used=5_000_000)],
+            prune=False,
+        )
+        assert plan.aliases == []
+        assert len(plan.errors) == 1
+        assert "box@x.be" in plan.errors[0] and "has_imap: true" in plan.errors[0]
+        assert not plan.is_empty()
+
+    def test_explicit_has_imap_false_is_intent_and_still_updates(self):
+        # A mailbox that also forwards: turning IMAP off leaves a delivery target.
+        plan = plan_domain(
+            _desired([DesiredAlias("box", ["serge@ginsys.eu"], has_imap=False)]),
+            _cfg(),
+            _live_domain(),
+            [_live_alias("box", has_imap=True, storage_used=5_000_000)],
+            prune=False,
+        )
+        assert plan.errors == []
+        (chg,) = plan.aliases
+        assert (chg.action, chg.changes) == ("update", ["has_imap"])
+        assert chg.body["has_imap"] is False
+
+    def test_explicit_has_imap_true_keeps_the_mailbox_with_no_diff(self):
+        plan = plan_domain(
+            _desired([DesiredAlias("box", [], has_imap=True)]),
+            _cfg(),
+            _live_domain(),
+            [_live_alias("box", recipients=[], has_imap=True, storage_used=5_000_000)],
+            prune=True,
+        )
+        assert plan.is_empty(), (plan.aliases, plan.errors)
+
+    def test_stored_mail_with_imap_already_off_is_neither_a_diff_nor_an_error(self):
+        # Nothing to clear: the guard is about the has_imap True -> False PUT, not about storage.
+        plan = plan_domain(
+            _desired([DesiredAlias("box", ["serge@ginsys.eu"])]),
+            _cfg(),
+            _live_domain(),
+            [_live_alias("box", has_imap=False, storage_used=5_000_000)],
+            prune=True,
+        )
+        assert plan.is_empty(), (plan.aliases, plan.errors)
+
+
+class TestNoDeliveryTarget:
+    """`recipients: []` is only meaningful for a mailbox; with `has_imap` resolving to false the
+    alias would accept mail and deliver it nowhere. Decidable only after defaults are resolved."""
+
+    def test_create_without_recipients_or_mailbox_is_an_error_not_a_create(self):
+        plan = plan_domain(_desired([DesiredAlias("a", [])]), _cfg(), _live_domain(), [], prune=False)
+        assert plan.aliases == []
+        assert len(plan.errors) == 1
+        assert "a@x.be" in plan.errors[0] and "no recipients" in plan.errors[0] and "has_imap: true" in plan.errors[0]
+
+    def test_update_emptying_recipients_on_a_non_mailbox_is_an_error(self):
+        plan = plan_domain(
+            _desired([DesiredAlias("a", [], has_imap=False)]),
+            _cfg(),
+            _live_domain(),
+            [_live_alias("a")],
+            prune=False,
+        )
+        assert plan.aliases == []
+        assert len(plan.errors) == 1 and "no recipients" in plan.errors[0]
+
+    def test_mailbox_without_recipients_is_created_with_has_imap(self):
+        plan = plan_domain(_desired([DesiredAlias("a", [], has_imap=True)]), _cfg(), _live_domain(), [], prune=False)
+        assert plan.errors == []
+        (chg,) = plan.aliases
+        assert (chg.action, chg.body["recipients"], chg.body["has_imap"]) == ("create", [], True)
+
+    def test_repo_default_has_imap_true_makes_recipientless_aliases_mailboxes(self):
+        plan = plan_domain(
+            _desired([DesiredAlias("a", [])]), _cfg(alias={"has_imap": True}), _live_domain(), [], prune=False
+        )
+        assert plan.errors == []
+        assert plan.aliases[0].body["has_imap"] is True
+
+
 class TestExpectations:
     def test_read_only_mismatch_is_reported_not_written(self):
         plan = plan_domain(_desired(), _cfg(), _live_domain(has_smtp=False), [], prune=False)

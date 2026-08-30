@@ -80,6 +80,17 @@ class TestFindings:
         z = _zone(**{"fe-bounces": None})
         assert _fields(check_zone(LIVE, z, expect_mx=True)) == ["return_path"]
 
+    def test_hostnames_and_record_names_compare_case_insensitively(self):
+        # DNS names are case-insensitive: a hand-written `ForwardEmail.NET.` or an upper-cased
+        # record key is the same record, not drift.
+        z = _zone(**{"fe-53661bcfc9._domainkey": None})
+        z["FE-53661BCFC9._domainkey"] = {"type": "TXT", "value": DKIM.replace(";", r"\;")}
+        z["fe-bounces"] = {"type": "CNAME", "value": "ForwardEmail.NET."}
+        assert check_zone(LIVE, z, expect_mx=True) == []
+        live = copy.deepcopy(LIVE)
+        live["smtp_dns_records"]["return_path"]["name"] = "FE-Bounces"
+        assert check_zone(live, ZONE, expect_mx=True) == []
+
     def test_verification_txt_missing_from_apex(self):
         z = _zone()
         z[""][2]["values"] = ["v=spf1 include:spf.forwardemail.net ~all"]

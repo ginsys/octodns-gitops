@@ -73,6 +73,7 @@ class DomainPlan:
     unmanaged: list[str] = field(default_factory=list)
     expect_mismatch: list[SettingChange] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     # ids seen in the listing the plan was built from; the apply path re-lists before a prune
     live_alias_ids: set = field(default_factory=set)
 
@@ -90,6 +91,21 @@ class DomainPlan:
 
 # Alias fields compared field-by-field (everything else needs special handling).
 _ALIAS_SIMPLE = ("is_enabled", "error_code_if_disabled", "has_imap", "has_pgp", "has_recipient_verification")
+
+# Forward Email rejects Perl-style look-around in alias regex names on EVERY write to the alias —
+# it re-validates the stored pattern even when the update body omits `name` (probed live
+# 2026-08-30, ginsys/octodns-gitops#2). Such aliases exist grandfathered, so export happily
+# round-trips them; warn the moment a change is planned instead of failing mid-apply.
+_LOOKAROUND = ("(?=", "(?!", "(?<")
+
+
+def _warn_lookaround(plan: DomainPlan, name: str, action: str) -> None:
+    if any(tok in name for tok in _LOOKAROUND):
+        plan.warnings.append(
+            f"alias {name}: Forward Email rejects Perl-style look-around patterns on every write "
+            f"(it re-validates the stored pattern), so this {action} will fail until the alias is "
+            "recreated with a supported pattern"
+        )
 
 
 def _resolve_alias(desired: DesiredAlias, defaults: dict) -> dict:
@@ -222,10 +238,12 @@ def plan_domain(
             continue
         if live is None:
             plan.aliases.append(AliasChange("create", want.name, None, _alias_body(resolved), ["new"]))
+            _warn_lookaround(plan, want.name, "create")
             continue
         chg = _diff_alias(resolved, live, cfg.alias, domain_quota)
         if chg:
             plan.aliases.append(chg)
+            _warn_lookaround(plan, want.name, "update")
 
     wanted = {a.name for a in desired.aliases}
     for live in live_aliases:

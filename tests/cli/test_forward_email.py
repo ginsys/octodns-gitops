@@ -3,9 +3,16 @@
 import copy
 import io
 import textwrap
+from pathlib import Path
 
 import pytest
-from octodns_gitops.cli.forward_email import main, run, zone_directory
+from octodns_gitops.cli.forward_email import (
+    AmbiguousZoneDirectory,
+    ZoneLookup,
+    main,
+    run,
+    zone_lookup,
+)
 from octodns_gitops.forward_email.config import (
     DEFAULT_ALIAS,
     DEFAULT_EXPECT,
@@ -119,7 +126,7 @@ def _run(cfg, client, **kw):
     kw.setdefault("doit", False)
     kw.setdefault("prune", False)
     kw.setdefault("mode", "plan")
-    kw.setdefault("zone_dir", None)
+    kw.setdefault("zones", None)
     rc = run(cfg, client, out=out, **kw)
     return rc, out.getvalue()
 
@@ -343,27 +350,27 @@ class TestDrift:
         zd = tmp_path / "zones"
         zd.mkdir()
         (zd / "x.be.yaml").write_text(text or self.ZONE)
-        return zd
+        return ZoneLookup.single(zd)
 
     def test_clean_zone_and_matching_expectations_exit_0(self, tmp_path):
         _write_domain_file(tmp_path, "x.be", "aliases: []\n")
         client = FakeClient([_live_domain("x.be")], {"x.be": []})
-        rc, out = _run(_cfg(tmp_path), client, mode="drift", zone_dir=self._zones(tmp_path))
+        rc, out = _run(_cfg(tmp_path), client, mode="drift", zones=self._zones(tmp_path))
         assert rc == 0
         assert "clean" in out
 
     def test_stale_dkim_in_zone_file_is_reported(self, tmp_path):
         _write_domain_file(tmp_path, "x.be", "aliases: []\n")
         client = FakeClient([_live_domain("x.be")], {"x.be": []})
-        zd = self._zones(tmp_path, self.ZONE.replace("p=MIIBIjANBg", "p=OLD"))
-        rc, out = _run(_cfg(tmp_path), client, mode="drift", zone_dir=zd)
+        zones = self._zones(tmp_path, self.ZONE.replace("p=MIIBIjANBg", "p=OLD"))
+        rc, out = _run(_cfg(tmp_path), client, mode="drift", zones=zones)
         assert rc == 1
         assert "dkim" in out
 
     def test_expectation_mismatch_is_drift(self, tmp_path):
         _write_domain_file(tmp_path, "x.be", "aliases: []\n")
         client = FakeClient([_live_domain("x.be", has_smtp=False)], {"x.be": []})
-        rc, out = _run(_cfg(tmp_path), client, mode="drift", zone_dir=self._zones(tmp_path))
+        rc, out = _run(_cfg(tmp_path), client, mode="drift", zones=self._zones(tmp_path))
         assert rc == 1
         assert "has_smtp" in out
 
@@ -372,27 +379,69 @@ class TestDrift:
         client = FakeClient([_live_domain("x.be")], {"x.be": []})
         zd = tmp_path / "zones"
         zd.mkdir()
-        rc, out = _run(_cfg(tmp_path), client, mode="drift", zone_dir=zd)
+        rc, out = _run(_cfg(tmp_path), client, mode="drift", zones=ZoneLookup.single(zd))
         assert rc == 0
         assert "no zone file" in out
 
+    def test_ambiguous_zone_directory_is_a_finding_not_unchecked(self, tmp_path):
+        # Two YamlProviders and nothing naming which one holds x.be: silently checking the
+        # first (or none) would report rc 0 for a zone file that was never compared.
+        _write_domain_file(tmp_path, "x.be", "aliases: []\n")
+        client = FakeClient([_live_domain("x.be")], {"x.be": []})
+        zones = ZoneLookup({"a": tmp_path / "a", "b": tmp_path / "b"}, {})
+        rc, out = _run(_cfg(tmp_path), client, mode="drift", zones=zones)
+        assert rc == 1
+        assert "ambiguous" in out and "2 YamlProviders" in out and "zones.x.be.sources" in out
+        assert "not checked" not in out.split("ambiguous")[0]
+
 
 class TestConfigPlumbing:
-    def test_zone_directory_comes_from_the_yaml_provider(self, tmp_path):
+    CONFIG = textwrap.dedent(
+        """
+        providers:
+          zones:
+            class: octodns.provider.yaml.YamlProvider
+            directory: ./zones
+          legacy:
+            class: octodns.provider.yaml.YamlProvider
+            directory: /abs/legacy
+          other:
+            class: octodns_hetzner.HetznerProvider
+        zones:
+          x.be.:
+            sources: [zones]
+            targets: [other]
+          old.be.:
+            sources: [legacy]
+          cloud.be.:
+            sources: [other]
+        """
+    )
+
+    def test_zone_directory_is_resolved_per_domain_from_the_zone_sources(self, tmp_path):
         cfg = tmp_path / "config.yaml"
-        cfg.write_text(
-            textwrap.dedent(
-                """
-                providers:
-                  zones:
-                    class: octodns.provider.yaml.YamlProvider
-                    directory: ./zones
-                  other:
-                    class: octodns_hetzner.HetznerProvider
-                """
-            )
-        )
-        assert zone_directory(str(cfg)) == tmp_path / "zones"
+        cfg.write_text(self.CONFIG)
+        zones = zone_lookup(str(cfg))
+        assert zones.directory("x.be") == tmp_path / "zones"
+        assert zones.directory("old.be") == Path("/abs/legacy")
+        # sourced from a non-YAML provider only: there is no zone file to compare
+        assert zones.directory("cloud.be") is None
+
+    def test_zone_directory_falls_back_to_the_only_yaml_provider(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("providers:\n  zones:\n    class: octodns.provider.yaml.YamlProvider\n    directory: ./zones\n")
+        assert zone_lookup(str(cfg)).directory("anything.be") == tmp_path / "zones"
+        cfg.write_text("providers:\n  other:\n    class: octodns_hetzner.HetznerProvider\n")
+        assert zone_lookup(str(cfg)).directory("anything.be") is None
+
+    def test_zone_directory_with_several_yaml_providers_and_no_source_is_ambiguous(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(self.CONFIG)
+        with pytest.raises(AmbiguousZoneDirectory, match="2 YamlProviders"):
+            zone_lookup(str(cfg)).directory("unlisted.be")
+        # a wildcard zone entry names the source for every unlisted zone
+        cfg.write_text(self.CONFIG + "  '*':\n    sources: [legacy]\n")
+        assert zone_lookup(str(cfg)).directory("unlisted.be") == Path("/abs/legacy")
 
     def test_main_without_opt_in_block_is_a_noop(self, tmp_path, monkeypatch, capsys):
         cfg = tmp_path / "config.yaml"

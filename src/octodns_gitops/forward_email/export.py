@@ -13,6 +13,7 @@ import re
 from .config import (
     EXPECT_FIELDS,
     SETTINGS_FIELDS,
+    VACATION_RESPONDER_KEYS,
     WRITE_ONLY_SETTINGS,
     ForwardEmailConfig,
 )
@@ -77,11 +78,10 @@ def _alias_lines(live: dict, defaults: dict, domain_quota: int) -> list[str]:
         out.append(f"{ind}max_quota: {human_quota(int(live['max_quota']))}")
     vac = live.get("vacation_responder")
     if _vacation_enabled(vac):
-        # Every live key, or the reconciler (which compares the whole mapping) plans an update.
+        # Only the schema keys: the loader rejects anything else, and the reconciler compares
+        # exactly these, so an extra live key is neither written nor a diff.
         out.append(f"{ind}vacation_responder:")
-        known = ("is_enabled", "subject", "message")
-        keys = [k for k in known if k in vac] + sorted(k for k in vac if k not in known)
-        out.extend(f"{ind}  {k}: {_scalar(vac[k])}" for k in keys)
+        out.extend(f"{ind}  {k}: {_scalar(vac[k])}" for k in VACATION_RESPONDER_KEYS if k in vac)
     return out
 
 

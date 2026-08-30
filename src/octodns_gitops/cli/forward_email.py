@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
@@ -39,16 +40,57 @@ from octodns_gitops.forward_email.export import export_domain
 from octodns_gitops.forward_email.reconcile import DomainPlan, plan_domain
 
 
-def zone_directory(config_path: str) -> Path | None:
-    """The YamlProvider's `directory`, resolved relative to config.yaml."""
+class AmbiguousZoneDirectory(ValueError):
+    """Several YamlProviders and nothing saying which one holds this domain's zone file."""
+
+
+@dataclass(frozen=True)
+class ZoneLookup:
+    """Where each domain's octoDNS zone file lives, from `providers:` and `zones:` in config.yaml.
+
+    Resolved per domain: with several YamlProviders, "the first one" would check a directory the
+    domain is not sourced from and report the file as merely absent (rc 0).
+    """
+
+    yaml_dirs: dict[str, Path]  # YamlProvider name -> directory (absolute)
+    sources: dict[str, list[str]]  # bare zone name (or "*") -> its `sources:` provider names
+
+    @classmethod
+    def single(cls, directory: Path) -> ZoneLookup:
+        return cls({"zones": directory}, {})
+
+    def directory(self, domain: str) -> Path | None:
+        """The zone directory for `domain`; None when it has no zone file in this repo."""
+        named = self.sources.get(domain, self.sources.get("*"))
+        if named is not None:
+            yaml_named = [p for p in named if p in self.yaml_dirs]
+            return self.yaml_dirs[yaml_named[0]] if yaml_named else None
+        if len(self.yaml_dirs) <= 1:
+            return next(iter(self.yaml_dirs.values()), None)
+        raise AmbiguousZoneDirectory(
+            f"ambiguous: {len(self.yaml_dirs)} YamlProviders ({', '.join(sorted(self.yaml_dirs))}) and "
+            f"zones.{domain}.sources does not name one"
+        )
+
+
+def zone_lookup(config_path: str) -> ZoneLookup:
+    """Parse the octoDNS `providers:`/`zones:` blocks; directories resolve relative to config.yaml."""
     cfg_file = Path(config_path)
     with open(cfg_file) as f:
         cfg = yaml.safe_load(f) or {}
-    for prov in (cfg.get("providers") or {}).values():
+    base = cfg_file.resolve().parent
+    yaml_dirs: dict[str, Path] = {}
+    providers = cfg.get("providers")
+    for name, prov in (providers.items() if isinstance(providers, dict) else ()):
         if isinstance(prov, dict) and str(prov.get("class", "")).endswith("YamlProvider"):
             d = Path(prov.get("directory", "./zones"))
-            return d if d.is_absolute() else cfg_file.resolve().parent / d
-    return None
+            yaml_dirs[str(name)] = d if d.is_absolute() else base / d
+    sources: dict[str, list[str]] = {}
+    zones = cfg.get("zones")
+    for zone, spec in (zones.items() if isinstance(zones, dict) else ()):
+        if isinstance(spec, dict) and isinstance(spec.get("sources"), list):
+            sources[str(zone).rstrip(".").lower()] = [str(s) for s in spec["sources"]]
+    return ZoneLookup(yaml_dirs, sources)
 
 
 def _print_plan(plan: DomainPlan, out: TextIO) -> None:
@@ -146,7 +188,7 @@ def run(
     doit: bool,
     prune: bool,
     mode: str,
-    zone_dir: Path | None,
+    zones: ZoneLookup | None,
     out: TextIO,
 ) -> int:
     scope = list(cfg.domains)
@@ -191,10 +233,18 @@ def run(
                 findings = []
                 plan = plan_domain(desired, cfg, live, [], prune=False)
                 findings += [(m.field, f"{m.field} is {m.live!r}, expected {m.desired!r}") for m in plan.expect_mismatch]
-                zone_file = (zone_dir / f"{domain}.yaml") if zone_dir else None
-                if zone_file is None or not zone_file.exists():
-                    out.write(f"{domain:<28} no zone file in this repo; DNS records not checked\n")
+                zone_file = None
+                try:
+                    zone_dir = zones.directory(domain) if zones else None
+                except AmbiguousZoneDirectory as e:
+                    # A finding, not "not checked": rc 0 here would hide a never-compared zone file.
+                    findings.append(("zone", f"{e}; DNS records not compared"))
                 else:
+                    zone_file = zone_dir / f"{domain}.yaml" if zone_dir else None
+                    if zone_file is None or not zone_file.exists():
+                        zone_file = None
+                        out.write(f"{domain:<28} no zone file in this repo; DNS records not checked\n")
+                if zone_file is not None:
                     with open(zone_file) as f:
                         zone = yaml.safe_load(f) or {}
                     settings = {**cfg.settings, **desired.settings}
@@ -204,7 +254,7 @@ def run(
                     rc = 1
                     out.write(f"{domain:<28} {len(findings)} finding(s)\n")
                     out.writelines(f"  {field}: {msg}\n" for field, msg in findings)
-                elif zone_file is not None and zone_file.exists():
+                elif zone_file is not None:
                     out.write(f"{domain:<28} clean\n")
                 continue
 
@@ -261,7 +311,7 @@ def main() -> int:
         doit=args.doit and mode == "plan",
         prune=args.prune,
         mode=mode,
-        zone_dir=zone_directory(args.config) if mode == "drift" else None,
+        zones=zone_lookup(args.config) if mode == "drift" else None,
         out=sys.stdout,
     )
 

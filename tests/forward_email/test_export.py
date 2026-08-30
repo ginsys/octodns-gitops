@@ -134,17 +134,29 @@ class TestExport:
         plan = plan_domain(load_domain_file(p, "x.be"), cfg, _live_domain(), live_aliases, prune=True)
         assert plan.is_empty(), plan.aliases
 
-    def test_every_vacation_responder_key_is_exported(self, tmp_path):
+    def test_vacation_responder_exports_only_the_fe_schema_keys(self, tmp_path):
+        # The loader accepts exactly is_enabled/subject/message; an exported extra key would make
+        # the file unloadable, and the reconciler compares the same three keys, so dropping it is
+        # still a zero diff.
         vac = {"is_enabled": True, "subject": "away", "message": "back", "end_date": "2026-09-01", "extra": {"k": 1}}
         live_aliases = [_live_alias("a", vacation_responder=dict(vac))]
         text = export_domain(_cfg(), _live_domain(), live_aliases)
         assert "vacation_responder:\n      is_enabled: true\n      subject: away\n      message: back\n" in text
-        assert "end_date: '2026-09-01'" in text
+        assert "end_date" not in text and "extra" not in text
         p = tmp_path / "x.be.yaml"
         p.write_text(text)
         desired = load_domain_file(p, "x.be")
-        assert desired.aliases[0].vacation_responder == vac
+        assert desired.aliases[0].vacation_responder == {"is_enabled": True, "subject": "away", "message": "back"}
         assert plan_domain(desired, _cfg(), _live_domain(), live_aliases, prune=True).is_empty()
+
+    def test_domain_without_aliases_round_trips_through_an_explicit_empty_list(self, tmp_path):
+        # The loader refuses an absent `aliases:` (it would read as "prune everything"), so the
+        # export must write the empty list out.
+        text = export_domain(_cfg(), _live_domain(), [])
+        assert text == "domain: x.be\naliases: []\n"
+        p = tmp_path / "x.be.yaml"
+        p.write_text(text)
+        assert load_domain_file(p, "x.be").aliases == []
 
     def test_alias_quotas_are_compared_against_the_preserved_per_domain_default(self, tmp_path):
         # A preserved `max_quota_per_alias: 10 GB` is what the reloaded file resolves aliases against;

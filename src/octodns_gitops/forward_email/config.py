@@ -110,6 +110,12 @@ ALIAS_TYPES: dict[str, type] = {
     "max_quota": str,
     "vacation_responder": dict,
 }
+# The responder mapping is exactly Forward Email's model (`aliases.js`): nothing else is admitted,
+# in the file or on export, and the reconciler compares only these keys. `is_enabled` is
+# required — a mapping without it would be an enabled-looking block that never fires.
+VACATION_RESPONDER_KEYS: tuple[str, ...] = ("is_enabled", "subject", "message")
+VACATION_RESPONDER_FIELDS: frozenset[str] = frozenset(VACATION_RESPONDER_KEYS)
+VACATION_RESPONDER_TYPES: dict[str, type] = {"is_enabled": bool, "subject": str, "message": str}
 # Alias fields a repo may default. Per-alias-only fields (quota, key, responder) are excluded:
 # a default there would silently be ignored by the reconciler.
 ALIAS_DEFAULTABLE: frozenset[str] = frozenset(
@@ -246,6 +252,15 @@ def _check_alias_keys(where: str, given: dict, allowed: frozenset[str]) -> None:
     _check_keys(where, given, allowed)
 
 
+def _check_vacation_responder(where: str, given: dict) -> None:
+    """Strict nested schema: `vacation_responder: dict` alone let `is_enabled: "false"` through,
+    and a truthy string enables the responder on the API."""
+    _check_keys(where, given, VACATION_RESPONDER_FIELDS)
+    if "is_enabled" not in given:
+        raise ForwardEmailConfigError(f"{where}: is_enabled (bool) is required")
+    _check_types(where, given, VACATION_RESPONDER_TYPES)
+
+
 def _check_types(where: str, given: dict, types: dict) -> None:
     for k, v in given.items():
         want = types.get(k)
@@ -328,8 +343,6 @@ def load_forward_email(config_path: str) -> ForwardEmailConfig | None:
 
 
 def _as_list(where: str, value) -> list[str]:
-    if value is None:
-        return []
     if isinstance(value, str):
         return [value]
     if isinstance(value, list) and all(isinstance(v, str) for v in value):
@@ -354,9 +367,12 @@ def load_domain_file(path: Path, domain: str) -> DesiredDomain:
     _check_types(f"{path}: settings", settings, SETTINGS_TYPES)
     _check_types(f"{path}: expect", expect, EXPECT_TYPES)
 
+    # Absent or null must never read as "no aliases": with --prune that is "delete them all".
     raw_aliases = data.get("aliases")
     if raw_aliases is None:
-        raw_aliases = []
+        raise ForwardEmailConfigError(
+            f"{path}: aliases must be an explicit list; write `aliases: []` for a domain with none"
+        )
     if not isinstance(raw_aliases, list):
         raise ForwardEmailConfigError(f"{path}: aliases must be a list")
 
@@ -372,10 +388,15 @@ def load_domain_file(path: Path, domain: str) -> DesiredDomain:
         if name in seen:
             raise ForwardEmailConfigError(f"{path}: duplicate alias {name!r}")
         seen.add(name)
+        # Same class as `aliases:` above: an absent key read as `[]` would PUT no recipients.
+        if "recipients" not in raw:
+            raise ForwardEmailConfigError(f"{where}: recipients is required (`recipients: []` only for a mailbox)")
+        if "vacation_responder" in raw:
+            _check_vacation_responder(f"{where}: vacation_responder", raw["vacation_responder"])
         aliases.append(
             DesiredAlias(
                 name=name,
-                recipients=_as_list(f"{where}: recipients", raw.get("recipients")),
+                recipients=_as_list(f"{where}: recipients", raw["recipients"]),
                 description=raw.get("description"),
                 is_enabled=raw.get("is_enabled"),
                 error_code_if_disabled=raw.get("error_code_if_disabled"),

@@ -5,6 +5,11 @@ are *inputs* to the zone file, so a mismatch means the zone file is stale, not t
 DMARC is special: FE suggests `p=reject`, the repo publishes its own ramped policy — only the
 FE `rua` address must be present. `has_strict_dmarc` is derived by FE from what it sees in
 DNS, so the expectation is derived from the zone file's own `p=` value.
+
+MX (unless the domain sets `ignore_mx_check`): FE documents itself as the domain's only mail
+exchanger, so the apex must list exactly `mx1`/`mx2.forwardemail.net` at one shared preference.
+Any other exchanger is a finding — a lower preference routes mail away from FE, a higher one is a
+backup FE knows nothing about; split routing opts out with `ignore_mx_check`.
 """
 
 from __future__ import annotations
@@ -124,8 +129,48 @@ def check_zone(live_domain: dict, zone: dict, *, expect_mx: bool) -> list[DriftF
             )
 
     if expect_mx:
-        got = {v["exchange"].rstrip(".").lower() for v in _values(zone, "", "MX") if isinstance(v, dict)}
-        if not FE_MX <= got:
-            findings.append(DriftFinding("mx", f"apex MX {sorted(got) or 'missing'} does not include {sorted(FE_MX)}"))
+        findings.extend(_check_mx(_values(zone, "", "MX")))
 
     return findings
+
+
+def _check_mx(values: list) -> list[DriftFinding]:
+    """octoDNS accepts `exchange`/`preference` and the legacy `value`/`priority` spellings.
+
+    Every preference of every entry is kept (a host may be listed twice), so the FE pair must
+    resolve to exactly one integer preference across all of its entries. An entry that is not an
+    exchange mapping is reported, never skipped: "exactly FE" cannot be claimed over it.
+    """
+    prefs: dict[str, set] = {}
+    malformed = []
+    for v in values:
+        host = str(v.get("exchange", v.get("value", ""))).rstrip(".").lower() if isinstance(v, dict) else ""
+        if not host:
+            malformed.append(v)
+            continue
+        prefs.setdefault(host, set()).add(v.get("preference", v.get("priority")))
+    out = []
+    if malformed:
+        out.append(DriftFinding("mx", f"apex MX has malformed value(s) {malformed!r}; expected exchange/preference mappings"))
+    if not FE_MX <= set(prefs):
+        out.append(DriftFinding("mx", f"apex MX {sorted(prefs) or 'missing'} does not include {sorted(FE_MX)}"))
+        return out
+    fe_prefs = set().union(*(prefs[h] for h in FE_MX))
+    if len(fe_prefs) != 1 or not all(isinstance(p, int) and not isinstance(p, bool) for p in fe_prefs):
+        out.append(
+            DriftFinding(
+                "mx",
+                f"apex MX preferences for the FE exchangers are {sorted(map(str, fe_prefs))}; "
+                "both must share exactly one integer preference",
+            )
+        )
+    others = sorted(set(prefs) - FE_MX)
+    if others:
+        out.append(
+            DriftFinding(
+                "mx",
+                f"apex MX also lists {others}; Forward Email must be the only exchanger "
+                "(set ignore_mx_check: true for deliberate split routing)",
+            )
+        )
+    return out

@@ -131,3 +131,80 @@ class TestFindings:
         z[""][1]["values"] = [{"exchange": "aspmx.l.google.com.", "preference": 1}]
         assert _fields(check_zone(LIVE, z, expect_mx=True)) == ["mx"]
         assert check_zone(LIVE, z, expect_mx=False) == []
+
+    @pytest.mark.parametrize(
+        ("values", "needle"),
+        [
+            # FE present, but a lower-preference exchanger routes mail elsewhere first.
+            (
+                [
+                    {"exchange": "mx1.forwardemail.net.", "preference": 10},
+                    {"exchange": "mx2.forwardemail.net.", "preference": 10},
+                    {"exchange": "aspmx.l.google.com.", "preference": 1},
+                ],
+                "aspmx.l.google.com",
+            ),
+            # A higher-preference extra is a backup FE does not know about: still a finding.
+            (
+                [
+                    {"exchange": "mx1.forwardemail.net.", "preference": 10},
+                    {"exchange": "mx2.forwardemail.net.", "preference": 10},
+                    {"exchange": "backup.example.org.", "preference": 20},
+                ],
+                "backup.example.org",
+            ),
+            # Both FE hosts present at different preferences.
+            (
+                [
+                    {"exchange": "mx1.forwardemail.net.", "preference": 10},
+                    {"exchange": "mx2.forwardemail.net.", "preference": 20},
+                ],
+                "preference",
+            ),
+            # Only one FE host.
+            ([{"exchange": "mx1.forwardemail.net.", "preference": 10}], "mx2.forwardemail.net"),
+            # Both FE hosts without any preference: "shared" None is not a valid preference.
+            ([{"exchange": "mx1.forwardemail.net."}, {"exchange": "mx2.forwardemail.net."}], "preference"),
+            # A duplicate FE entry at another preference must not be hidden by the later one.
+            (
+                [
+                    {"exchange": "mx1.forwardemail.net.", "preference": 20},
+                    {"exchange": "mx1.forwardemail.net.", "preference": 10},
+                    {"exchange": "mx2.forwardemail.net.", "preference": 10},
+                ],
+                "preference",
+            ),
+            # An entry that is not an exchange/preference mapping is not "no exchanger".
+            (
+                [
+                    {"exchange": "mx1.forwardemail.net.", "preference": 10},
+                    {"exchange": "mx2.forwardemail.net.", "preference": 10},
+                    "mx3.example.org.",
+                ],
+                "malformed",
+            ),
+            (
+                [
+                    {"exchange": "mx1.forwardemail.net.", "preference": 10},
+                    {"exchange": "mx2.forwardemail.net.", "preference": 10},
+                    {"preference": 5},
+                ],
+                "malformed",
+            ),
+        ],
+    )
+    def test_mx_requires_exactly_fe_at_one_shared_preference(self, values, needle):
+        z = _zone()
+        z[""][1]["values"] = values
+        findings = check_zone(LIVE, z, expect_mx=True)
+        assert _fields(findings) == ["mx"], findings
+        assert needle in findings[0].message
+        assert check_zone(LIVE, z, expect_mx=False) == []
+
+    def test_mx_accepts_octodns_legacy_priority_value_keys(self):
+        z = _zone()
+        z[""][1]["values"] = [
+            {"value": "MX1.forwardemail.net.", "priority": 10},
+            {"value": "mx2.forwardemail.net", "priority": 10},
+        ]
+        assert check_zone(LIVE, z, expect_mx=True) == []

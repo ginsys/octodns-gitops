@@ -195,6 +195,36 @@ class TestAliases:
         assert chg.body["error_code_if_disabled"] == 250
 
 
+class TestVacationResponder:
+    def test_live_keys_outside_the_fe_schema_do_not_produce_a_diff(self):
+        # The loader only admits is_enabled/subject/message, so comparing the whole live mapping
+        # would plan an update forever if FE ever returned an extra key.
+        want = {"is_enabled": True, "subject": "away", "message": "back"}
+        live = _live_alias("a", vacation_responder={**want, "end_date": "2026-09-01"})
+        plan = plan_domain(
+            _desired([DesiredAlias("a", ["serge@ginsys.eu"], vacation_responder=want)]),
+            _cfg(),
+            _live_domain(),
+            [live],
+            prune=True,
+        )
+        assert plan.is_empty(), plan.aliases
+
+    def test_changed_message_is_an_update_carrying_the_desired_mapping(self):
+        want = {"is_enabled": True, "subject": "away", "message": "new"}
+        live = _live_alias("a", vacation_responder={"is_enabled": True, "subject": "away", "message": "old"})
+        plan = plan_domain(
+            _desired([DesiredAlias("a", ["serge@ginsys.eu"], vacation_responder=want)]),
+            _cfg(),
+            _live_domain(),
+            [live],
+            prune=True,
+        )
+        (chg,) = plan.aliases
+        assert chg.changes == ["vacation_responder"]
+        assert chg.body["vacation_responder"] == want
+
+
 class TestQuota:
     def test_absent_live_quota_means_domain_default(self):
         plan = plan_domain(

@@ -98,8 +98,15 @@ Contract:
   web-UI change). A freshly exported file must plan as **zero changes**. Write-only settings already
   declared in the file being overwritten are preserved, since the API cannot return them.
 - `make mail-drift` compares FE's generated DNS records (DKIM key, `fe-bounces` CNAME, verification
-  TXT, the DMARC `rua` address, MX unless `ignore_mx_check`) with the repo's zone file, and reports
-  read-only expectation mismatches. Exit 1 on any finding.
+  TXT, the DMARC `rua` address) with the repo's zone file, and reports read-only expectation
+  mismatches. Unless `ignore_mx_check: true`, the apex MX must be exactly FE's two exchangers at
+  one shared preference — any other exchanger is a finding. The zone file is looked up in the
+  YamlProvider the zone's `sources:` names; with several YamlProviders and no such entry the
+  domain is reported as ambiguous rather than unchecked. Exit 1 on any finding.
+- `aliases:` is always an explicit list (`aliases: []` for a domain with none) and every alias
+  declares `recipients:`; an absent key is an error, never "empty" — with `PRUNE=1` that would
+  have meant "delete everything". `vacation_responder` takes exactly `is_enabled` (bool,
+  required), `subject` and `message`.
 - `max_quota_per_alias` and `bounce_webhook` cannot be read back from the API: they are sent with
   every domain update but never produce a diff on their own.
 

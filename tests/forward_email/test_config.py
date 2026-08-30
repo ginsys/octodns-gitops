@@ -109,8 +109,10 @@ class TestLoadForwardEmail:
         with pytest.raises(ForwardEmailConfigError, match="env/"):
             load_forward_email(str(cfg))
 
-    def test_domains_required_and_normalized(self, tmp_path):
-        cfg = _write(tmp_path, "config.yaml", "forward_email:\n  domains: []\n")
+    @pytest.mark.parametrize("domains", ["domains: []\n", "domains:\n", "token: env/X\n"])
+    def test_domains_required_and_normalized(self, tmp_path, domains):
+        # Empty, null and absent are all errors: the list is the ownership boundary.
+        cfg = _write(tmp_path, "config.yaml", f"forward_email:\n  {domains}")
         with pytest.raises(ForwardEmailConfigError, match="domains"):
             load_forward_email(str(cfg))
         cfg = _write(tmp_path, "config.yaml", "forward_email:\n  domains: [Autops.BE., autops.be]\n")
@@ -325,3 +327,51 @@ class TestLoadDomainFile:
         )
         with pytest.raises(ForwardEmailConfigError, match="storage_used"):
             load_domain_file(p, "x.be")
+
+    @pytest.mark.parametrize("body", ["settings:\n  retention_days: 0\n", "aliases:\n", "aliases: null\n"])
+    def test_aliases_must_be_an_explicit_list(self, tmp_path, body):
+        # Absent or null used to load as `[]`, so `--prune` would delete every non-mailbox alias
+        # of a domain whose file merely forgot the key.
+        p = _write(tmp_path, "x.be.yaml", body)
+        with pytest.raises(ForwardEmailConfigError, match=r"aliases: \[\]"):
+            load_domain_file(p, "x.be")
+        assert load_domain_file(_write(tmp_path, "y.be.yaml", "aliases: []\n"), "y.be").aliases == []
+
+    def test_alias_recipients_must_be_explicit(self, tmp_path):
+        # Same class: an absent key read as `[]` would PUT `recipients: []` and stop forwarding.
+        p = _write(tmp_path, "x.be.yaml", "aliases:\n  - {name: a}\n")
+        with pytest.raises(ForwardEmailConfigError, match=r"recipients"):
+            load_domain_file(p, "x.be")
+
+    @pytest.mark.parametrize(
+        ("responder", "needle"),
+        [
+            ("{is_enabled: 'false', subject: away}", "is_enabled"),  # truthy string enabled it
+            ("{subject: away, message: back}", "is_enabled"),  # required
+            ("{is_enabled: true, subject: away, end_date: '2026-09-01'}", "end_date"),
+            ("{is_enabled: true, subject: 1}", "subject"),
+            ("{}", "is_enabled"),
+        ],
+    )
+    def test_vacation_responder_is_validated_against_the_fe_schema(self, tmp_path, responder, needle):
+        p = _write(tmp_path, "x.be.yaml", f"aliases:\n  - {{name: a, recipients: [x@y.z], vacation_responder: {responder}}}\n")
+        with pytest.raises(ForwardEmailConfigError, match=needle):
+            load_domain_file(p, "x.be")
+
+    def test_vacation_responder_accepts_the_three_fe_fields(self, tmp_path):
+        p = _write(
+            tmp_path,
+            "x.be.yaml",
+            """
+            aliases:
+              - name: a
+                recipients: [x@y.z]
+                vacation_responder: {is_enabled: true, subject: away, message: back soon}
+              - name: b
+                recipients: [x@y.z]
+                vacation_responder: {is_enabled: false}
+            """,
+        )
+        d = load_domain_file(p, "x.be")
+        assert d.aliases[0].vacation_responder == {"is_enabled": True, "subject": "away", "message": "back soon"}
+        assert d.aliases[1].vacation_responder == {"is_enabled": False}

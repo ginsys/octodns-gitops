@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from .config import (
     EXPECT_FIELDS,
     SETTINGS_FIELDS,
+    VACATION_RESPONDER_KEYS,
     WRITE_ONLY_SETTINGS,
     DesiredAlias,
     DesiredDomain,
@@ -108,6 +109,12 @@ def _vacation_enabled(v) -> bool:
     return bool(v) and bool(v.get("is_enabled"))
 
 
+def _vacation_view(v) -> dict:
+    """The schema keys of a responder mapping — the loader admits nothing else, so a live key
+    outside them must not read as a diff."""
+    return {k: v[k] for k in VACATION_RESPONDER_KEYS if k in v} if isinstance(v, dict) else {}
+
+
 def _alias_body(resolved: dict) -> dict:
     """Write body: name/recipients plus every resolved flag, explicitly.
 
@@ -153,8 +160,9 @@ def _diff_alias(resolved: dict, live: dict, defaults: dict, domain_quota: int) -
         body["max_quota"] = resolved["max_quota"] or ""
 
     want_vac = resolved["vacation_responder"]
-    if _vacation_enabled(want_vac) != _vacation_enabled(live.get("vacation_responder")) or (
-        _vacation_enabled(want_vac) and want_vac != live.get("vacation_responder")
+    live_vac = live.get("vacation_responder")
+    if _vacation_enabled(want_vac) != _vacation_enabled(live_vac) or (
+        _vacation_enabled(want_vac) and _vacation_view(want_vac) != _vacation_view(live_vac)
     ):
         changes.append("vacation_responder")
         body["vacation_responder"] = want_vac or {"is_enabled": False}

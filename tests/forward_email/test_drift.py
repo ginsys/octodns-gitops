@@ -2,6 +2,7 @@
 
 import copy
 
+import pytest
 from octodns_gitops.forward_email.drift import check_zone
 
 DKIM = "v=DKIM1; k=rsa; p=MIIBIjANBg;"
@@ -87,6 +88,21 @@ class TestFindings:
     def test_dmarc_rua_must_include_fe_address(self):
         z = _zone(_dmarc={"type": "TXT", "value": r"v=DMARC1\; p=none\; rua=mailto:x@y.z\;"})
         assert _fields(check_zone(LIVE, z, expect_mx=True)) == ["dmarc"]
+
+    def test_dmarc_rua_is_matched_as_a_whole_uri_not_a_substring(self):
+        z = _zone(_dmarc={"type": "TXT", "value": r"v=DMARC1\; p=none\; rua=mailto:dmarc-6a61b3b09bc@forwardemail.net.example.org\;"})
+        assert _fields(check_zone(LIVE, z, expect_mx=True)) == ["dmarc"]
+        z = _zone(_dmarc={"type": "TXT", "value": r"v=DMARC1\; p=none\; rua=mailto:x@y.z, mailto:DMARC-6a61b3b09bc@ForwardEmail.net!10m\;"})
+        assert check_zone(LIVE, z, expect_mx=True) == []
+
+    @pytest.mark.parametrize("token", [None, ""])
+    def test_missing_verification_record_is_unverifiable_not_clean(self, token):
+        live = {k: v for k, v in LIVE.items() if k != "verification_record"}
+        if token is not None:
+            live["verification_record"] = token
+        (f,) = check_zone(live, ZONE, expect_mx=True)
+        assert f.field == "verification"
+        assert "cannot verify" in f.message
 
     def test_dmarc_policy_may_differ_from_fe_suggestion(self):
         # FE suggests p=reject; the ramp deliberately publishes quarantine. Not a finding.

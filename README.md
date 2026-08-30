@@ -95,7 +95,8 @@ Contract:
   agrees with the first. An alias with `has_imap: true` or stored mail is a mailbox: it is never
   pruned and blocks the run until it is added to git or removed in the web UI.
 - `make mail-export` writes the files from live state (bootstrap, or re-baseline after a deliberate
-  web-UI change). A freshly exported file must plan as **zero changes**.
+  web-UI change). A freshly exported file must plan as **zero changes**. Write-only settings already
+  declared in the file being overwritten are preserved, since the API cannot return them.
 - `make mail-drift` compares FE's generated DNS records (DKIM key, `fe-bounces` CNAME, verification
   TXT, the DMARC `rua` address, MX unless `ignore_mx_check`) with the repo's zone file, and reports
   read-only expectation mismatches. Exit 1 on any finding.

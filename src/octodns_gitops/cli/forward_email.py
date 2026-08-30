@@ -24,6 +24,7 @@ import yaml
 
 from octodns_gitops.forward_email.api import ForwardEmailApiError, ForwardEmailClient
 from octodns_gitops.forward_email.config import (
+    WRITE_ONLY_SETTINGS,
     ForwardEmailConfig,
     ForwardEmailConfigError,
     load_domain_file,
@@ -67,26 +68,10 @@ def _print_plan(plan: DomainPlan, out: TextIO) -> None:
     out.writelines(f"  ERROR: {e}\n" for e in plan.errors)
 
 
-def _apply(plan: DomainPlan, client, out: TextIO) -> bool:
-    """Perform the writes for one domain. Returns False if the prune guard aborted."""
-    body = plan.settings_body()
-    if body:
-        client.update_domain(plan.domain, body)
-        out.write(f"  applied settings: {sorted(body)}\n")
-    deletes = [c for c in plan.aliases if c.action == "delete"]
-    for chg in plan.aliases:
-        if chg.action == "create":
-            client.create_alias(plan.domain, chg.body)
-        elif chg.action == "update":
-            client.update_alias(plan.domain, chg.alias_id, chg.body)
-        else:
-            continue
-        out.write(f"  applied alias {chg.action} {chg.name}\n")
-    if not deletes:
-        return True
-    # A0: never prune from a single listing — re-fetch and require the same id set, and for
-    # every planned delete the same name and still no mailbox (a mailbox may appear under an
-    # unchanged id between the two listings).
+def _prune_still_safe(plan: DomainPlan, deletes: list, client, out: TextIO) -> bool:
+    """A0: never prune from a single listing — re-fetch and require the same id set, and for
+    every planned delete the same name and still no mailbox (a mailbox may appear under an
+    unchanged id between the two listings)."""
     before = plan.live_alias_ids
     relisted = {a.get("id"): a for a in client.list_aliases(plan.domain)}
     if before != set(relisted):
@@ -104,10 +89,49 @@ def _apply(plan: DomainPlan, client, out: TextIO) -> bool:
                 f"storage_used={now.get('storage_used')}); prune aborted, re-run\n"
             )
             return False
+    return True
+
+
+def _apply(plan: DomainPlan, client, out: TextIO) -> bool:
+    """Perform the writes for one domain. Returns False if the prune guard aborted.
+
+    Order: settings PUT, prune re-list, creates/updates, deletes. The re-list must precede
+    our own creates — they change the id set, so a create+delete plan would otherwise always
+    abort half-applied.
+    """
+    body = plan.settings_body()
+    if body:
+        client.update_domain(plan.domain, body)
+        out.write(f"  applied settings: {sorted(body)}\n")
+    deletes = [c for c in plan.aliases if c.action == "delete"]
+    if deletes and not _prune_still_safe(plan, deletes, client, out):
+        return False
+    for chg in plan.aliases:
+        if chg.action == "create":
+            client.create_alias(plan.domain, chg.body)
+        elif chg.action == "update":
+            client.update_alias(plan.domain, chg.alias_id, chg.body)
+        else:
+            continue
+        out.write(f"  applied alias {chg.action} {chg.name}\n")
     for chg in deletes:
         client.delete_alias(plan.domain, chg.alias_id)
         out.write(f"  applied alias delete {chg.name}\n")
     return True
+
+
+def _preserved_write_only(path: Path) -> dict:
+    """Write-only settings declared in the existing per-domain file: the API cannot return them,
+    so an export that overwrote the file would drop them and the next domain PUT would send the
+    repo default instead."""
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        existing = yaml.safe_load(f) or {}
+    settings = existing.get("settings") if isinstance(existing, dict) else None
+    if not isinstance(settings, dict):
+        return {}
+    return {k: v for k, v in settings.items() if k in WRITE_ONLY_SETTINGS}
 
 
 def run(
@@ -149,8 +173,11 @@ def run(
                 aliases = client.list_aliases(domain)
                 cfg.directory.mkdir(parents=True, exist_ok=True)
                 path = cfg.directory / f"{domain}.yaml"
-                path.write_text(export_domain(cfg, live, aliases))
+                write_only = _preserved_write_only(path)
+                path.write_text(export_domain(cfg, live, aliases, write_only=write_only))
                 out.write(f"{domain:<28} wrote {path} ({len(aliases)} aliases)\n")
+                if write_only:
+                    out.write(f"  preserved write-only settings from the previous file: {sorted(write_only)}\n")
                 continue
 
             path = cfg.directory / f"{domain}.yaml"
@@ -199,8 +226,9 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Reconcile Forward Email settings and aliases (opt-in)")
     p.add_argument("--config", default="config.yaml")
     p.add_argument("--domain", action="append", help="Limit to this domain (repeatable)")
-    p.add_argument("--doit", action="store_true", help="Perform writes (default dry-run)")
-    p.add_argument("--dry-run", action="store_true", help="Preview only (the default; accepted for symmetry)")
+    w = p.add_mutually_exclusive_group()
+    w.add_argument("--doit", action="store_true", help="Perform writes (default dry-run)")
+    w.add_argument("--dry-run", action="store_true", help="Preview only (the default; accepted for symmetry)")
     p.add_argument("--prune", action="store_true", help="Delete aliases absent from git (never mailboxes)")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--export", action="store_true", help="Write per-domain files from live state")

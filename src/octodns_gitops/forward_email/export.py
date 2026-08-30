@@ -16,7 +16,7 @@ from .config import (
     WRITE_ONLY_SETTINGS,
     ForwardEmailConfig,
 )
-from .reconcile import _ALIAS_SIMPLE, _vacation_enabled, parse_quota
+from .reconcile import _ALIAS_SIMPLE, _norm_desc, _vacation_enabled, parse_quota
 
 # Plain scalars must start with a letter, `_` or `$` (`$1@…` recipients): anything starting
 # with a digit — dates, `1e3`, `"25"` — is quoted so YAML cannot retype it.
@@ -32,6 +32,9 @@ def _scalar(v) -> str:
         return "true" if v else "false"
     if isinstance(v, (int, float)):
         return str(v)
+    if isinstance(v, (dict, list)):
+        # JSON is valid YAML flow style; keeps nested values typed on reload.
+        return json.dumps(v, ensure_ascii=False)
     s = str(v)
     if bool(_PLAIN_OK.match(s)) and s == s.strip() and s.lower() not in _YAML_WORDS:
         return s
@@ -60,8 +63,11 @@ def _alias_lines(live: dict, defaults: dict, domain_quota: int) -> list[str]:
     ind = "    "
     out = [f"  - name: {_scalar(live['name'])}"]
     _list(out, "recipients", live.get("recipients") or [], ind)
-    if live.get("description"):
-        out.append(f"{ind}description: {_scalar(live['description'])}")
+    # Written whenever it differs from the resolved default — including a blank live value
+    # under a non-empty repo default, or reloading would inherit the default and plan an update.
+    desc = _norm_desc(live.get("description"))
+    if desc != _norm_desc(defaults["description"]):
+        out.append(f"{ind}description: {_scalar(desc)}")
     for f in _ALIAS_SIMPLE:
         if live.get(f, defaults[f]) != defaults[f]:
             out.append(f"{ind}{f}: {_scalar(live[f])}")
@@ -71,22 +77,27 @@ def _alias_lines(live: dict, defaults: dict, domain_quota: int) -> list[str]:
         out.append(f"{ind}max_quota: {human_quota(int(live['max_quota']))}")
     vac = live.get("vacation_responder")
     if _vacation_enabled(vac):
+        # Every live key, or the reconciler (which compares the whole mapping) plans an update.
         out.append(f"{ind}vacation_responder:")
-        for k in ("is_enabled", "subject", "message"):
-            if k in vac:
-                out.append(f"{ind}  {k}: {_scalar(vac[k])}")
+        known = ("is_enabled", "subject", "message")
+        keys = [k for k in known if k in vac] + sorted(k for k in vac if k not in known)
+        out.extend(f"{ind}  {k}: {_scalar(vac[k])}" for k in keys)
     return out
 
 
-def export_domain(cfg: ForwardEmailConfig, live_domain: dict, live_aliases: list[dict]) -> str:
-    """Return the YAML text for `live_domain`, omitting everything equal to the resolved defaults."""
+def export_domain(
+    cfg: ForwardEmailConfig, live_domain: dict, live_aliases: list[dict], *, write_only: dict | None = None
+) -> str:
+    """Return the YAML text for `live_domain`, omitting everything equal to the resolved defaults.
+
+    `write_only` carries `WRITE_ONLY_SETTINGS` values the API cannot return (taken from the file
+    being overwritten); they are emitted like any other non-default setting.
+    """
     lines = [f"domain: {_scalar(live_domain['name'])}"]
 
-    settings = {
-        f: live_domain[f]
-        for f in sorted(SETTINGS_FIELDS - WRITE_ONLY_SETTINGS)
-        if f in live_domain and live_domain[f] != cfg.settings.get(f)
-    }
+    readable = {f: live_domain[f] for f in SETTINGS_FIELDS - WRITE_ONLY_SETTINGS if f in live_domain}
+    preserved = {f: v for f, v in (write_only or {}).items() if f in WRITE_ONLY_SETTINGS}
+    settings = {f: v for f, v in sorted({**readable, **preserved}.items()) if v != cfg.settings.get(f)}
     if settings:
         lines.append("settings:")
         lines.extend(f"  {k}: {_scalar(v)}" for k, v in settings.items())
@@ -100,7 +111,9 @@ def export_domain(cfg: ForwardEmailConfig, live_domain: dict, live_aliases: list
         lines.append("expect:")
         lines.extend(f"  {k}: {_scalar(v)}" for k, v in expect.items())
 
-    domain_quota = parse_quota(cfg.settings.get("max_quota_per_alias") or 0)
+    # Alias quotas resolve against the per-domain default the reloaded file will carry — a
+    # preserved `max_quota_per_alias` included — or an omitted alias quota reloads as a reset.
+    domain_quota = parse_quota({**cfg.settings, **preserved}.get("max_quota_per_alias") or 0)
     if not live_aliases:
         lines.append("aliases: []")
     else:

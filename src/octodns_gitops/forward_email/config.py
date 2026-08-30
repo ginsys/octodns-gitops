@@ -17,7 +17,7 @@ Field sets below come from Forward Email's server code (`update-domain.js` contr
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -51,13 +51,14 @@ EXPECT_FIELDS: frozenset[str] = frozenset(
     {"has_smtp", "has_newsletter", "max_recipients_per_alias", "plan"}
 )
 
-# Alias fields the alias create/update endpoints accept.
+# Alias fields the alias create/update endpoints accept. `labels` is deliberately absent: the
+# server applies it (`catch-all`), so declaring it would plan as clean and do nothing.
+SERVER_MANAGED_ALIAS_FIELDS: frozenset[str] = frozenset({"labels"})
 ALIAS_FIELDS: frozenset[str] = frozenset(
     {
         "name",
         "recipients",
         "description",
-        "labels",
         "is_enabled",
         "error_code_if_disabled",
         "has_imap",
@@ -100,7 +101,6 @@ ALIAS_TYPES: dict[str, type] = {
     "name": str,
     "recipients": (str, list),
     "description": str,
-    "labels": (str, list),
     "is_enabled": bool,
     "error_code_if_disabled": int,
     "has_imap": bool,
@@ -120,7 +120,6 @@ ALIAS_DEFAULTABLE: frozenset[str] = frozenset(
         "has_pgp",
         "has_recipient_verification",
         "description",
-        "labels",
     }
 )
 
@@ -155,7 +154,6 @@ DEFAULT_ALIAS: dict = {
     "has_pgp": False,
     "has_recipient_verification": False,
     "description": None,
-    "labels": [],
 }
 
 DEFAULT_DIRECTORY = "mail/forward-email"
@@ -183,7 +181,6 @@ class DesiredAlias:
     name: str
     recipients: list[str]
     description: str | None = None
-    labels: list[str] = field(default_factory=list)
     is_enabled: bool | None = None
     error_code_if_disabled: int | None = None
     has_imap: bool | None = None
@@ -205,17 +202,43 @@ class DesiredDomain:
 def _load_yaml(path: Path) -> dict:
     if not path.exists():
         raise ForwardEmailConfigError(f"file not found: {path}")
-    with open(path) as f:
-        data = yaml.safe_load(f) or {}
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError) as e:
+        raise ForwardEmailConfigError(f"{path}: {type(e).__name__}: {e}") from e
     if not isinstance(data, dict):
         raise ForwardEmailConfigError(f"{path}: expected a mapping at top level")
     return data
+
+
+def _section(where: str, container: dict, key: str) -> dict:
+    """An optional mapping-valued key. Absent or `null` is an empty mapping; anything else that is
+    not a mapping (`[]`, `false`, a scalar) is an error — never silently "nothing declared", since
+    the package defaults would then be enforced from a file the author got wrong."""
+    value = container.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ForwardEmailConfigError(f"{where}: expected a mapping, got {type(value).__name__} ({value!r})")
+    return value
 
 
 def _check_keys(where: str, given: dict, allowed: frozenset[str]) -> None:
     unknown = sorted(set(given) - allowed)
     if unknown:
         raise ForwardEmailConfigError(f"{where}: unknown or read-only field(s): {', '.join(unknown)}")
+
+
+def _check_alias_keys(where: str, given: dict, allowed: frozenset[str]) -> None:
+    """Like `_check_keys`, but a server-managed field gets its own message: accepting it would
+    plan as clean while doing nothing, and "unknown" would send the reader looking for a typo."""
+    managed = sorted(set(given) & SERVER_MANAGED_ALIAS_FIELDS)
+    if managed:
+        raise ForwardEmailConfigError(
+            f"{where}: {', '.join(managed)} is server-managed by Forward Email and cannot be declared"
+        )
+    _check_keys(where, given, allowed)
 
 
 def _check_types(where: str, given: dict, types: dict) -> None:
@@ -242,11 +265,14 @@ def load_forward_email(config_path: str) -> ForwardEmailConfig | None:
     """Parse the `forward_email:` block. Returns None when the repo has not opted in."""
     cfg_file = Path(config_path)
     cfg = _load_yaml(cfg_file)
-    block = cfg.get("forward_email")
-    if not block:
+    if "forward_email" not in cfg:
         return None
-    if not isinstance(block, dict):
-        raise ForwardEmailConfigError("forward_email: expected a mapping")
+    # The key itself is the opt-in: a present-but-empty block is a broken config, never an opt-out.
+    block = cfg["forward_email"]
+    if not isinstance(block, dict) or not block:
+        raise ForwardEmailConfigError(
+            "forward_email: expected a non-empty mapping (remove the key entirely to opt out)"
+        )
 
     token = block.get("token", f"env/{DEFAULT_TOKEN_ENV}")
     if not isinstance(token, str) or not token.startswith("env/") or len(token) <= 4:
@@ -255,7 +281,10 @@ def load_forward_email(config_path: str) -> ForwardEmailConfig | None:
         )
     token_env = token[len("env/") :]
 
-    directory = Path(block.get("directory", DEFAULT_DIRECTORY))
+    raw_directory = block.get("directory", DEFAULT_DIRECTORY)
+    if not isinstance(raw_directory, str) or not raw_directory.strip():
+        raise ForwardEmailConfigError(f"forward_email.directory must be a non-empty string, got {raw_directory!r}")
+    directory = Path(raw_directory)
     if not directory.is_absolute():
         directory = cfg_file.resolve().parent / directory
 
@@ -269,15 +298,13 @@ def load_forward_email(config_path: str) -> ForwardEmailConfig | None:
             raise ForwardEmailConfigError(f"forward_email.domains: duplicate entry {n!r}")
         domains.append(n)
 
-    defaults = block.get("defaults") or {}
-    if not isinstance(defaults, dict):
-        raise ForwardEmailConfigError("forward_email.defaults: expected a mapping")
-    settings_over = defaults.get("settings") or {}
-    expect_over = defaults.get("expect") or {}
-    alias_over = defaults.get("alias") or {}
+    defaults = _section("forward_email.defaults", block, "defaults")
+    settings_over = _section("forward_email.defaults.settings", defaults, "settings")
+    expect_over = _section("forward_email.defaults.expect", defaults, "expect")
+    alias_over = _section("forward_email.defaults.alias", defaults, "alias")
     _check_keys("forward_email.defaults.settings", settings_over, SETTINGS_FIELDS)
     _check_keys("forward_email.defaults.expect", expect_over, EXPECT_FIELDS)
-    _check_keys("forward_email.defaults.alias", alias_over, ALIAS_DEFAULTABLE)
+    _check_alias_keys("forward_email.defaults.alias", alias_over, ALIAS_DEFAULTABLE)
     _check_types("forward_email.defaults.settings", settings_over, SETTINGS_TYPES)
     _check_types("forward_email.defaults.expect", expect_over, EXPECT_TYPES)
     _check_types("forward_email.defaults.alias", alias_over, ALIAS_TYPES)
@@ -312,8 +339,8 @@ def load_domain_file(path: Path, domain: str) -> DesiredDomain:
         )
     _check_keys(f"{path}", data, frozenset({"domain", "settings", "expect", "aliases"}))
 
-    settings = data.get("settings") or {}
-    expect = data.get("expect") or {}
+    settings = _section(f"{path}: settings", data, "settings")
+    expect = _section(f"{path}: expect", data, "expect")
     _check_keys(f"{path}: settings", settings, SETTINGS_FIELDS)
     _check_keys(f"{path}: expect", expect, EXPECT_FIELDS)
     _check_types(f"{path}: settings", settings, SETTINGS_TYPES)
@@ -331,7 +358,7 @@ def load_domain_file(path: Path, domain: str) -> DesiredDomain:
         if not isinstance(raw, dict) or "name" not in raw:
             raise ForwardEmailConfigError(f"{path}: aliases[{i}] needs a name")
         where = f"{path}: alias {raw['name']!r}"
-        _check_keys(where, raw, ALIAS_FIELDS)
+        _check_alias_keys(where, raw, ALIAS_FIELDS)
         _check_types(where, raw, ALIAS_TYPES)
         name = raw["name"]
         if name in seen:
@@ -342,7 +369,6 @@ def load_domain_file(path: Path, domain: str) -> DesiredDomain:
                 name=name,
                 recipients=_as_list(f"{where}: recipients", raw.get("recipients")),
                 description=raw.get("description"),
-                labels=_as_list(f"{where}: labels", raw.get("labels")),
                 is_enabled=raw.get("is_enabled"),
                 error_code_if_disabled=raw.get("error_code_if_disabled"),
                 has_imap=raw.get("has_imap"),

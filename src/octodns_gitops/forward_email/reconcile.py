@@ -10,7 +10,7 @@ Rules that are easy to get wrong, all decided in the 2026-08-30 audit:
   on their own; they ride along in every domain PUT that a verifiable change triggers.
 - Alias `max_quota` is bytes on GET and a human string on PUT; absent on GET means "domain
   default". A live value differing from the desired one is reset with a blank PUT.
-- `labels` is server-applied (`catch-all`) and never compared.
+- `labels` is server-applied (`catch-all`): never compared here, rejected by the config loader.
 - A prune never deletes an alias with `has_imap` or stored mail: that is a mailbox. Such an
   alias missing from git is an error that blocks the run.
 """
@@ -108,16 +108,16 @@ def _vacation_enabled(v) -> bool:
     return bool(v) and bool(v.get("is_enabled"))
 
 
-def _alias_body(resolved: dict, defaults: dict) -> dict:
+def _alias_body(resolved: dict) -> dict:
     """Write body: name/recipients plus every resolved flag, explicitly.
 
-    The server's own defaults are not ours (a repo may default `is_enabled: false`), so a
-    create never leaves a flag for the server to choose.
+    The server's own defaults are not ours (a repo may default `is_enabled: false`, or a
+    non-empty description), so a create never leaves a flag for the server to choose.
     """
     body = {"name": resolved["name"], "recipients": resolved["recipients"]}
     for f in _ALIAS_SIMPLE:
         body[f] = resolved[f]
-    if _norm_desc(resolved["description"]) != _norm_desc(defaults["description"]):
+    if _norm_desc(resolved["description"]):
         body["description"] = resolved["description"]
     if resolved["public_key"]:
         body["public_key"] = resolved["public_key"]
@@ -130,7 +130,7 @@ def _alias_body(resolved: dict, defaults: dict) -> dict:
 
 def _diff_alias(resolved: dict, live: dict, defaults: dict, domain_quota: int) -> AliasChange | None:
     changes: list[str] = []
-    body = _alias_body(resolved, defaults)
+    body = _alias_body(resolved)
 
     if sorted(resolved["recipients"]) != sorted(live.get("recipients") or []):
         changes.append("recipients")
@@ -193,7 +193,7 @@ def plan_domain(
         resolved = _resolve_alias(want, cfg.alias)
         live = live_by_name.get(want.name)
         if live is None:
-            plan.aliases.append(AliasChange("create", want.name, None, _alias_body(resolved, cfg.alias), ["new"]))
+            plan.aliases.append(AliasChange("create", want.name, None, _alias_body(resolved), ["new"]))
             continue
         chg = _diff_alias(resolved, live, cfg.alias, domain_quota)
         if chg:

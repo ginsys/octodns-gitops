@@ -81,6 +81,8 @@ class FakeClient:
 
     def create_alias(self, domain, body):
         self.calls.append(("create_alias", domain, body))
+        # A real create changes the id set the prune guard re-lists.
+        self.aliases.setdefault(domain, []).append(_live_alias(**body))
         return {}
 
     def update_alias(self, domain, alias_id, body):
@@ -89,6 +91,7 @@ class FakeClient:
 
     def delete_alias(self, domain, alias_id):
         self.calls.append(("delete_alias", domain, alias_id))
+        self.aliases[domain] = [a for a in self.aliases.get(domain, []) if a["id"] != alias_id]
 
     def writes(self):
         return [c for c in self.calls if c[0] != "list_aliases"]
@@ -196,6 +199,15 @@ class TestApply:
         assert client.calls.count(("list_aliases", "x.be")) == 2
         assert ("delete_alias", "x.be", "id-stray") in client.calls
 
+    def test_create_and_prune_in_one_plan_relists_before_creating(self, tmp_path):
+        # A create changes the id set; re-listing after it would always abort the prune.
+        _write_domain_file(tmp_path, "x.be", "aliases:\n  - {name: b, recipients: [serge@ginsys.eu]}\n")
+        client = FakeClient([_live_domain("x.be")], {"x.be": [_live_alias("stray")]})
+        rc, out = _run(_cfg(tmp_path), client, doit=True, prune=True)
+        assert rc == 0, out
+        assert [c[0] for c in client.calls] == ["list_aliases", "list_aliases", "create_alias", "delete_alias"]
+        assert ("delete_alias", "x.be", "id-stray") in client.calls
+
     def test_prune_aborts_when_the_second_listing_differs(self, tmp_path):
         _write_domain_file(tmp_path, "x.be", "aliases: []\n")
         client = FakeClient([_live_domain("x.be")], {"x.be": [_live_alias("stray")]})
@@ -279,6 +291,29 @@ class TestExport:
         assert x.startswith("domain: x.be\nsettings:\n  retention_days: 0\n")
         assert (tmp_path / "mail" / "y.be.yaml").read_text() == "domain: y.be\naliases: []\n"
         assert client.writes() == []
+
+    def test_export_preserves_write_only_settings_from_the_existing_file(self, tmp_path):
+        # bounce_webhook / max_quota_per_alias cannot be read back; an overwrite would drop them
+        # and the next unrelated domain PUT would silently send the repo default instead.
+        _write_domain_file(
+            tmp_path,
+            "x.be",
+            """
+            settings:
+              bounce_webhook: https://hooks.example/fe
+              max_quota_per_alias: 10 GB
+              retention_days: 5
+            aliases: []
+            """,
+        )
+        client = FakeClient([_live_domain("x.be")], {"x.be": []})
+        rc, out = _run(_cfg(tmp_path), client, mode="export")
+        assert rc == 0
+        text = (tmp_path / "mail" / "x.be.yaml").read_text()
+        assert "bounce_webhook: 'https://hooks.example/fe'" in text
+        assert "max_quota_per_alias: '10 GB'" in text
+        assert "retention_days" not in text  # readable fields come from live state, not the old file
+        assert "preserved write-only" in out and "bounce_webhook" in out
 
 
 class TestDrift:
@@ -365,6 +400,23 @@ class TestConfigPlumbing:
         monkeypatch.setattr("sys.argv", ["x", "--config", str(cfg)])
         assert main() == 0
         assert "not configured" in capsys.readouterr().out
+
+    def test_main_rejects_doit_together_with_dry_run(self, tmp_path, monkeypatch, capsys):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("forward_email:\n  domains: [x.be]\n")
+        monkeypatch.setattr("sys.argv", ["x", "--config", str(cfg), "--doit", "--dry-run", "--prune"])
+        with pytest.raises(SystemExit) as e:
+            main()
+        assert e.value.code == 2
+        assert "not allowed with" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("text", ["forward_email: [\n", "forward_email:\n  domains: [x.be]\n  directory: 5\n"])
+    def test_main_reports_malformed_config_as_rc_2_not_a_traceback(self, tmp_path, monkeypatch, capsys, text):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(text)
+        monkeypatch.setattr("sys.argv", ["x", "--config", str(cfg)])
+        assert main() == 2
+        assert "config error" in capsys.readouterr().err
 
     def test_main_refuses_without_token_env(self, tmp_path, monkeypatch, capsys):
         cfg = tmp_path / "config.yaml"

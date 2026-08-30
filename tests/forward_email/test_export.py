@@ -123,6 +123,42 @@ class TestExport:
         assert d.aliases[1].description == "1e3"
         assert d.aliases[2].vacation_responder["message"] == "line1\nline2"
 
+    def test_blank_live_description_under_a_non_empty_default_is_written_explicitly(self, tmp_path):
+        cfg = _cfg()
+        cfg.alias["description"] = "managed in git"
+        live_aliases = [_live_alias("a", description=""), _live_alias("b", description=None), _live_alias("c")]
+        text = export_domain(cfg, _live_domain(), live_aliases)
+        assert text.count("description: ''") == 3
+        p = tmp_path / "x.be.yaml"
+        p.write_text(text)
+        plan = plan_domain(load_domain_file(p, "x.be"), cfg, _live_domain(), live_aliases, prune=True)
+        assert plan.is_empty(), plan.aliases
+
+    def test_every_vacation_responder_key_is_exported(self, tmp_path):
+        vac = {"is_enabled": True, "subject": "away", "message": "back", "end_date": "2026-09-01", "extra": {"k": 1}}
+        live_aliases = [_live_alias("a", vacation_responder=dict(vac))]
+        text = export_domain(_cfg(), _live_domain(), live_aliases)
+        assert "vacation_responder:\n      is_enabled: true\n      subject: away\n      message: back\n" in text
+        assert "end_date: '2026-09-01'" in text
+        p = tmp_path / "x.be.yaml"
+        p.write_text(text)
+        desired = load_domain_file(p, "x.be")
+        assert desired.aliases[0].vacation_responder == vac
+        assert plan_domain(desired, _cfg(), _live_domain(), live_aliases, prune=True).is_empty()
+
+    def test_alias_quotas_are_compared_against_the_preserved_per_domain_default(self, tmp_path):
+        # A preserved `max_quota_per_alias: 10 GB` is what the reloaded file resolves aliases against;
+        # comparing exports against the repo default instead turned a live 1 GiB alias into a reset.
+        live_aliases = [_live_alias("a", max_quota=GIB), _live_alias("b", max_quota=10 * GIB), _live_alias("c")]
+        text = export_domain(_cfg(), _live_domain(), live_aliases, write_only={"max_quota_per_alias": "10 GB"})
+        assert "max_quota_per_alias: '10 GB'" in text
+        assert "  - name: a\n    recipients:\n      - serge@ginsys.eu\n    max_quota: 1 GB\n" in text
+        assert text.count("max_quota:") == 1
+        p = tmp_path / "x.be.yaml"
+        p.write_text(text)
+        plan = plan_domain(load_domain_file(p, "x.be"), _cfg(), _live_domain(), live_aliases, prune=True)
+        assert plan.is_empty(), plan.aliases
+
     def test_export_then_plan_is_a_zero_diff(self, tmp_path):
         # The A4 acceptance test in miniature.
         live_dom = _live_domain(retention_days=0, ignore_mx_check=True, has_newsletter=True)

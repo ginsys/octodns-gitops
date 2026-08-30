@@ -137,6 +137,18 @@ class TestAliases:
         assert chg.body["is_enabled"] is False
         assert chg.body["error_code_if_disabled"] == 550
 
+    def test_repo_default_description_reaches_the_create_body(self):
+        # The server's default is an empty description, not the repo's.
+        plan = plan_domain(
+            _desired([DesiredAlias("new", ["a@b.c"])]),
+            _cfg(alias={"description": "managed in git"}),
+            _live_domain(),
+            [],
+            prune=False,
+        )
+        (chg,) = plan.aliases
+        assert chg.body["description"] == "managed in git"
+
     def test_changed_recipients_is_an_update_naming_the_field(self):
         plan = plan_domain(
             _desired([DesiredAlias("a", ["x@y.z", "serge@ginsys.eu"])]),

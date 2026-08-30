@@ -54,6 +54,20 @@ def _dmarc_tags(v: str) -> dict:
     return tags
 
 
+def _rua_uris(tag: str) -> set[str]:
+    """The complete URIs of a `rua=` tag, compared exactly — never as substrings, which would
+    accept `mailto:x@forwardemail.net.example.org`. Mail addresses compare case-insensitively
+    and without an RFC 7489 `!size` suffix."""
+    out = set()
+    for uri in tag.split(","):
+        uri = uri.strip()
+        if uri.lower().startswith("mailto:"):
+            uri = uri.split("!", 1)[0].lower()
+        if uri:
+            out.add(uri)
+    return out
+
+
 def check_zone(live_domain: dict, zone: dict, *, expect_mx: bool) -> list[DriftFinding]:
     findings: list[DriftFinding] = []
     recs = live_domain.get("smtp_dns_records") or {}
@@ -79,7 +93,11 @@ def check_zone(live_domain: dict, zone: dict, *, expect_mx: bool) -> list[DriftF
             findings.append(DriftFinding("return_path", f"{rp['name']} CNAME: expected {rp['value']}, zone has {got}"))
 
     token = live_domain.get("verification_record")
-    if token:
+    if not token:
+        findings.append(
+            DriftFinding("verification", "Forward Email returned no verification_record; cannot verify the apex TXT")
+        )
+    else:
         want = f"forward-email-site-verification={token}"
         if want not in [_unescape_txt(v) for v in _values(zone, "", "TXT")]:
             findings.append(DriftFinding("verification", f"apex TXT {want} missing"))
@@ -87,10 +105,12 @@ def check_zone(live_domain: dict, zone: dict, *, expect_mx: bool) -> list[DriftF
     dmarc = recs.get("dmarc")
     zone_dmarc = _values(zone, "_dmarc", "TXT")
     if dmarc:
-        fe_rua = _dmarc_tags(dmarc["value"]).get("rua", "")
-        published = [_dmarc_tags(v) for v in zone_dmarc]
-        if not any(fe_rua and fe_rua in t.get("rua", "") for t in published):
-            findings.append(DriftFinding("dmarc", f"_dmarc TXT does not report to FE ({fe_rua or 'no rua'})"))
+        fe_rua = _rua_uris(_dmarc_tags(dmarc["value"]).get("rua", ""))
+        published = [_rua_uris(_dmarc_tags(v).get("rua", "")) for v in zone_dmarc]
+        if not fe_rua or not any(fe_rua <= p for p in published):
+            findings.append(
+                DriftFinding("dmarc", f"_dmarc TXT does not report to FE ({', '.join(sorted(fe_rua)) or 'no rua'})")
+            )
 
     if "has_strict_dmarc" in live_domain and zone_dmarc:
         strict = any(_dmarc_tags(v).get("p", "").lower() == "reject" for v in zone_dmarc)

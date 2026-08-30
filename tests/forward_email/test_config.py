@@ -48,6 +48,13 @@ class TestLoadForwardEmail:
         cfg = _write(tmp_path, "config.yaml", "providers: {}\nzones: {}\n")
         assert load_forward_email(str(cfg)) is None
 
+    @pytest.mark.parametrize("block", ["forward_email: {}\n", "forward_email:\n", "forward_email: []\n"])
+    def test_present_but_empty_block_is_an_error_not_an_opt_out(self, tmp_path, block):
+        # The key is the opt-in; an emptied block must not silently disable every mail command.
+        cfg = _write(tmp_path, "config.yaml", f"providers: {{}}\n{block}")
+        with pytest.raises(ForwardEmailConfigError, match="forward_email"):
+            load_forward_email(str(cfg))
+
     def test_parses_block_with_defaults_and_domains(self, tmp_path):
         cfg = _write(
             tmp_path,
@@ -142,6 +149,37 @@ class TestTypeValidation:
         cfg = _write(tmp_path, "config.yaml", f"forward_email:\n  domains: [x.be]\n  {block}")
         with pytest.raises(ForwardEmailConfigError):
             load_forward_email(str(cfg))
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            "defaults: []\n",
+            "defaults:\n    settings: []\n",
+            "defaults:\n    expect: false\n",
+            "defaults:\n    alias: []\n",
+            "directory: 5\n",
+        ],
+    )
+    def test_non_mapping_sections_in_the_block_are_rejected_not_treated_as_absent(self, tmp_path, block):
+        # `settings: []` used to become `{}` and the package defaults were then enforced.
+        cfg = _write(tmp_path, "config.yaml", f"forward_email:\n  domains: [x.be]\n  {block}")
+        with pytest.raises(ForwardEmailConfigError):
+            load_forward_email(str(cfg))
+
+    @pytest.mark.parametrize("body", ["settings: []\naliases: []\n", "settings: false\n", "expect: x\n"])
+    def test_non_mapping_sections_in_the_domain_file_are_rejected(self, tmp_path, body):
+        p = _write(tmp_path, "x.be.yaml", body)
+        with pytest.raises(ForwardEmailConfigError, match="mapping"):
+            load_domain_file(p, "x.be")
+
+    def test_unreadable_or_malformed_yaml_is_a_config_error(self, tmp_path):
+        p = _write(tmp_path, "x.be.yaml", "aliases: [\n")
+        with pytest.raises(ForwardEmailConfigError, match="x.be.yaml"):
+            load_domain_file(p, "x.be")
+        d = tmp_path / "dir.yaml"
+        d.mkdir()
+        with pytest.raises(ForwardEmailConfigError, match="dir.yaml"):
+            load_domain_file(d, "x.be")
 
     def test_domains_must_be_strings(self, tmp_path):
         cfg = _write(tmp_path, "config.yaml", "forward_email:\n  domains: [123]\n")
@@ -251,6 +289,15 @@ class TestLoadDomainFile:
         )
         with pytest.raises(ForwardEmailConfigError, match="duplicate alias"):
             load_domain_file(p, "x.be")
+
+    def test_labels_are_server_managed_and_rejected(self, tmp_path):
+        # Accepted-but-never-reconciled would plan as clean while doing nothing.
+        p = _write(tmp_path, "x.be.yaml", "aliases:\n  - {name: a, recipients: [x@y.z], labels: [vip]}\n")
+        with pytest.raises(ForwardEmailConfigError, match="server-managed"):
+            load_domain_file(p, "x.be")
+        cfg = _write(tmp_path, "config.yaml", "forward_email:\n  domains: [x.be]\n  defaults:\n    alias:\n      labels: [vip]\n")
+        with pytest.raises(ForwardEmailConfigError, match="server-managed"):
+            load_forward_email(str(cfg))
 
     def test_unknown_alias_key_rejected(self, tmp_path):
         p = _write(

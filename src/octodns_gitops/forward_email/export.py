@@ -1,0 +1,110 @@
+"""Render live API state as a per-domain desired-state file.
+
+Hand-rolled emitter rather than `yaml.dump`: key order, quoting and the omission of
+default-valued fields are the contract. Regex alias names (`/^([\\w\\-\\.]+)$/`) are
+single-quoted — a double-quoted YAML scalar would read `\\w` as an escape sequence.
+"""
+
+from __future__ import annotations
+
+import re
+
+from .config import (
+    EXPECT_FIELDS,
+    SETTINGS_FIELDS,
+    WRITE_ONLY_SETTINGS,
+    ForwardEmailConfig,
+)
+from .reconcile import _ALIAS_SIMPLE, _vacation_enabled, parse_quota
+
+_PLAIN_OK = re.compile(r"^[A-Za-z0-9$_][A-Za-z0-9$_@.+\- ]*$")
+_YAML_WORDS = {"true", "false", "null", "yes", "no", "on", "off", "~"}
+_QUOTA_UNITS = (("TB", 1024**4), ("GB", 1024**3), ("MB", 1024**2), ("KB", 1024))
+
+
+def _scalar(v) -> str:
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    s = str(v)
+    plain = (
+        bool(_PLAIN_OK.match(s))
+        and s == s.strip()
+        and s.lower() not in _YAML_WORDS
+        and not re.fullmatch(r"[\d.]+", s)
+    )
+    if plain:
+        return s
+    return "'" + s.replace("'", "''") + "'"
+
+
+def human_quota(nbytes: int) -> str:
+    for unit, size in _QUOTA_UNITS:
+        if nbytes % size == 0:
+            return f"{nbytes // size} {unit}"
+    return f"{nbytes} B"
+
+
+def _list(lines: list[str], key: str, values: list, indent: str) -> None:
+    if not values:
+        lines.append(f"{indent}{key}: []")
+        return
+    lines.append(f"{indent}{key}:")
+    lines.extend(f"{indent}  - {_scalar(v)}" for v in values)
+
+
+def _alias_lines(live: dict, defaults: dict, domain_quota: int) -> list[str]:
+    ind = "    "
+    out = [f"  - name: {_scalar(live['name'])}"]
+    _list(out, "recipients", live.get("recipients") or [], ind)
+    if live.get("description"):
+        out.append(f"{ind}description: {_scalar(live['description'])}")
+    for f in _ALIAS_SIMPLE:
+        if live.get(f, defaults[f]) != defaults[f]:
+            out.append(f"{ind}{f}: {_scalar(live[f])}")
+    if live.get("public_key"):
+        out.append(f"{ind}public_key: {_scalar(live['public_key'])}")
+    if live.get("max_quota") is not None and int(live["max_quota"]) != domain_quota:
+        out.append(f"{ind}max_quota: {human_quota(int(live['max_quota']))}")
+    vac = live.get("vacation_responder")
+    if _vacation_enabled(vac):
+        out.append(f"{ind}vacation_responder:")
+        for k in ("is_enabled", "subject", "message"):
+            if k in vac:
+                out.append(f"{ind}  {k}: {_scalar(vac[k])}")
+    return out
+
+
+def export_domain(cfg: ForwardEmailConfig, live_domain: dict, live_aliases: list[dict]) -> str:
+    """Return the YAML text for `live_domain`, omitting everything equal to the resolved defaults."""
+    lines = [f"domain: {_scalar(live_domain['name'])}"]
+
+    settings = {
+        f: live_domain[f]
+        for f in sorted(SETTINGS_FIELDS - WRITE_ONLY_SETTINGS)
+        if f in live_domain and live_domain[f] != cfg.settings.get(f)
+    }
+    if settings:
+        lines.append("settings:")
+        lines.extend(f"  {k}: {_scalar(v)}" for k, v in settings.items())
+
+    expect = {
+        f: live_domain[f]
+        for f in sorted(EXPECT_FIELDS)
+        if f in live_domain and live_domain[f] != cfg.expect.get(f)
+    }
+    if expect:
+        lines.append("expect:")
+        lines.extend(f"  {k}: {_scalar(v)}" for k, v in expect.items())
+
+    domain_quota = parse_quota(cfg.settings.get("max_quota_per_alias") or 0)
+    if not live_aliases:
+        lines.append("aliases: []")
+    else:
+        lines.append("aliases:")
+        for a in sorted(live_aliases, key=lambda a: a["name"]):
+            lines.extend(_alias_lines(a, cfg.alias, domain_quota))
+    return "\n".join(lines) + "\n"

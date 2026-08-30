@@ -19,7 +19,7 @@ LOGGING_CONFIG ?= logging.yaml
 
 .DEFAULT_GOAL := help
 
-.PHONY: help validate plan apply drift-check report delegate delegate-ns delegate-ds dnssec ovh-token
+.PHONY: help validate plan apply drift-check report delegate delegate-ns delegate-ds dnssec ovh-token mail-plan mail-apply mail-drift mail-export
 
 help:
 \t@echo ""
@@ -47,6 +47,12 @@ help:
 \t@echo "  dnssec       - Validate DNSSEC delegation (read-only)"
 \t@echo "  ovh-token    - Request a scoped OVH consumer key (ENV_PREFIX=OVH_...)"
 \t@echo ""
+\t@echo "Forward Email account settings (opt-in domains under 'forward_email:' in config.yaml):"
+\t@echo "  mail-plan    - DRY-RUN: diff mail/forward-email/<domain>.yaml against the account"
+\t@echo "  mail-apply   - APPLY settings and alias changes (PRUNE=1 also deletes aliases absent from git)"
+\t@echo "  mail-drift   - Check FE-generated DNS records and read-only expectations against the repo"
+\t@echo "  mail-export  - Write per-domain files from live state (bootstrap / re-baseline)"
+\t@echo ""
 \t@echo "Options:"
 \t@echo "  ZONE=example.com.  - Process only this zone (works with plan, apply, drift-check, report, delegate*, dnssec)"
 \t@echo "  FORCE=1            - Override 30% safety threshold for apply"
@@ -54,6 +60,8 @@ help:
 \t@echo "  SCOPE=             - dnssec scope: delegation (default) | all-signed-targets"
 \t@echo "  ENV_PREFIX=        - ovh-token credential env prefix (e.g. OVH_AUTOPS)"
 \t@echo "  ALLOW_MANUAL_PENDING=1 - delegate-ns/-ds: treat manual (Gandi) zones as informational"
+\t@echo "  DOMAIN=example.com - mail-*: process only this Forward Email domain (no trailing dot)"
+\t@echo "  PRUNE=1            - mail-plan/-apply: also delete aliases absent from git (never mailboxes)"
 \t@echo "  DEBUG=1            - Enable debug output"
 \t@echo "  QUIET=             - Disable quiet mode (unset QUIET)"
 \t@echo "  LOGGING_CONFIG=    - Override logging config file"
@@ -135,6 +143,27 @@ dnssec:
 # Request a least-privilege OVH consumer key (ENV_PREFIX=OVH_AUTOPS)
 ovh-token:
 \t@octodns-gitops-ovh-token $(if $(ENV_PREFIX),--env-prefix $(ENV_PREFIX),)
+
+# Forward Email - DRY-RUN diff of account settings and aliases (DOMAIN=, PRUNE=1)
+mail-plan:
+\t@octodns-gitops-forwardemail --config config.yaml $(if $(DOMAIN),--domain $(DOMAIN),) $(if $(PRUNE),--prune,)
+
+# Forward Email - APPLY settings and alias changes (never creates or deletes domains)
+mail-apply:
+\t@echo ""
+\t@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+\t@echo "  APPLYING FORWARD EMAIL ACCOUNT CHANGES"
+\t@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+\t@echo ""
+\t@octodns-gitops-forwardemail --doit --config config.yaml $(if $(DOMAIN),--domain $(DOMAIN),) $(if $(PRUNE),--prune,)
+
+# Forward Email - FE-generated DNS records and read-only expectations vs the repo
+mail-drift:
+\t@octodns-gitops-forwardemail --drift --config config.yaml $(if $(DOMAIN),--domain $(DOMAIN),)
+
+# Forward Email - write mail/forward-email/<domain>.yaml from live state
+mail-export:
+\t@octodns-gitops-forwardemail --export --config config.yaml $(if $(DOMAIN),--domain $(DOMAIN),)
 """
 
 

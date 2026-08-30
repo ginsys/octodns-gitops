@@ -1,0 +1,105 @@
+"""Tests for forward_email/drift.py — FE server-generated records vs the octoDNS zone file."""
+
+import copy
+
+from octodns_gitops.forward_email.drift import check_zone
+
+DKIM = "v=DKIM1; k=rsa; p=MIIBIjANBg;"
+LIVE = {
+    "name": "autops.eu",
+    "verification_record": "WPoBifGj1Z",
+    "has_strict_dmarc": False,
+    "smtp_dns_records": {
+        "dkim": {"name": "fe-53661bcfc9._domainkey", "value": DKIM},
+        "return_path": {"name": "fe-bounces", "value": "forwardemail.net"},
+        "dmarc": {
+            "name": "_dmarc",
+            "value": "v=DMARC1; p=reject; pct=100; rua=mailto:dmarc-6a61b3b09bc@forwardemail.net;",
+        },
+    },
+}
+ZONE = {
+    "": [
+        {"type": "A", "value": "91.98.1.229"},
+        {
+            "type": "MX",
+            "values": [
+                {"exchange": "mx1.forwardemail.net.", "preference": 10},
+                {"exchange": "mx2.forwardemail.net.", "preference": 10},
+            ],
+        },
+        {
+            "type": "TXT",
+            "values": [
+                "forward-email-site-verification=WPoBifGj1Z",
+                "v=spf1 include:spf.forwardemail.net ~all",
+            ],
+        },
+    ],
+    "_dmarc": {
+        "type": "TXT",
+        "value": r"v=DMARC1\; p=quarantine\; pct=25\; rua=mailto:dmarc-6a61b3b09bc@forwardemail.net,mailto:dmarc-report@ginsys.net\;",
+    },
+    "fe-53661bcfc9._domainkey": {"type": "TXT", "value": DKIM.replace(";", r"\;")},
+    "fe-bounces": {"type": "CNAME", "value": "forwardemail.net."},
+}
+
+
+def _zone(**edits):
+    z = copy.deepcopy(ZONE)
+    for name, rec in edits.items():
+        if rec is None:
+            z.pop(name, None)
+        else:
+            z[name] = rec
+    return z
+
+
+def _fields(findings):
+    return sorted(f.field for f in findings)
+
+
+class TestClean:
+    def test_matching_zone_has_no_findings(self):
+        assert check_zone(LIVE, ZONE, expect_mx=True) == []
+
+
+class TestFindings:
+    def test_dkim_value_mismatch(self):
+        z = _zone(**{"fe-53661bcfc9._domainkey": {"type": "TXT", "value": r"v=DKIM1\; p=OLD\;"}})
+        (f,) = check_zone(LIVE, z, expect_mx=True)
+        assert f.field == "dkim"
+        assert "fe-53661bcfc9._domainkey" in f.message
+
+    def test_dkim_record_missing(self):
+        z = _zone(**{"fe-53661bcfc9._domainkey": None})
+        assert _fields(check_zone(LIVE, z, expect_mx=True)) == ["dkim"]
+
+    def test_return_path_cname_missing(self):
+        z = _zone(**{"fe-bounces": None})
+        assert _fields(check_zone(LIVE, z, expect_mx=True)) == ["return_path"]
+
+    def test_verification_txt_missing_from_apex(self):
+        z = _zone()
+        z[""][2]["values"] = ["v=spf1 include:spf.forwardemail.net ~all"]
+        assert _fields(check_zone(LIVE, z, expect_mx=True)) == ["verification"]
+
+    def test_dmarc_rua_must_include_fe_address(self):
+        z = _zone(_dmarc={"type": "TXT", "value": r"v=DMARC1\; p=none\; rua=mailto:x@y.z\;"})
+        assert _fields(check_zone(LIVE, z, expect_mx=True)) == ["dmarc"]
+
+    def test_dmarc_policy_may_differ_from_fe_suggestion(self):
+        # FE suggests p=reject; the ramp deliberately publishes quarantine. Not a finding.
+        assert check_zone(LIVE, ZONE, expect_mx=True) == []
+
+    def test_strict_dmarc_expectation_derived_from_zone_policy(self):
+        live = dict(LIVE, has_strict_dmarc=True)  # FE thinks reject, zone says quarantine
+        assert _fields(check_zone(live, ZONE, expect_mx=True)) == ["has_strict_dmarc"]
+        z = _zone(_dmarc={"type": "TXT", "value": r"v=DMARC1\; p=reject\; rua=mailto:dmarc-6a61b3b09bc@forwardemail.net\;"})
+        assert check_zone(live, z, expect_mx=True) == []
+
+    def test_mx_checked_unless_domain_ignores_it(self):
+        z = _zone()
+        z[""][1]["values"] = [{"exchange": "aspmx.l.google.com.", "preference": 1}]
+        assert _fields(check_zone(LIVE, z, expect_mx=True)) == ["mx"]
+        assert check_zone(LIVE, z, expect_mx=False) == []

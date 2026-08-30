@@ -133,6 +133,21 @@ class TestLoadForwardEmail:
         with pytest.raises(ForwardEmailConfigError, match="has_strict_dmarc"):
             load_forward_email(str(cfg))
 
+    @pytest.mark.parametrize(
+        "block, needle",
+        [
+            ("defualts:\n    settings:\n      retention_days: 0\n", "defualts"),
+            ("defaults:\n    setings:\n      retention_days: 0\n", "setings"),
+            ("tokn: env/X\n", "tokn"),
+        ],
+    )
+    def test_unknown_keys_in_the_block_are_rejected_not_ignored(self, tmp_path, block, needle):
+        # A misspelled `defaults` would silently enforce the package defaults instead of the
+        # operator's override — the same present-but-wrong class as an empty block.
+        cfg = _write(tmp_path, "config.yaml", f"forward_email:\n  domains: [x.be]\n  {block}")
+        with pytest.raises(ForwardEmailConfigError, match=needle):
+            load_forward_email(str(cfg))
+
 
 class TestTypeValidation:
     @pytest.mark.parametrize(

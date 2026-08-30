@@ -159,6 +159,11 @@ DEFAULT_ALIAS: dict = {
 DEFAULT_DIRECTORY = "mail/forward-email"
 DEFAULT_TOKEN_ENV = "FORWARD_EMAIL_API_TOKEN"
 
+# Keys of the `forward_email:` block and of its `defaults:` sub-block. Checked like every other
+# mapping here: an unknown key is an error, never something silently ignored.
+BLOCK_FIELDS: frozenset[str] = frozenset({"token", "directory", "domains", "defaults"})
+DEFAULTS_FIELDS: frozenset[str] = frozenset({"settings", "expect", "alias"})
+
 
 class ForwardEmailConfigError(ValueError):
     """Raised when the block or a domain file is invalid."""
@@ -273,6 +278,8 @@ def load_forward_email(config_path: str) -> ForwardEmailConfig | None:
         raise ForwardEmailConfigError(
             "forward_email: expected a non-empty mapping (remove the key entirely to opt out)"
         )
+    # A misspelled key (`defualts:`) must not silently fall back to the package defaults.
+    _check_keys("forward_email", block, BLOCK_FIELDS)
 
     token = block.get("token", f"env/{DEFAULT_TOKEN_ENV}")
     if not isinstance(token, str) or not token.startswith("env/") or len(token) <= 4:
@@ -299,6 +306,7 @@ def load_forward_email(config_path: str) -> ForwardEmailConfig | None:
         domains.append(n)
 
     defaults = _section("forward_email.defaults", block, "defaults")
+    _check_keys("forward_email.defaults", defaults, DEFAULTS_FIELDS)
     settings_over = _section("forward_email.defaults.settings", defaults, "settings")
     expect_over = _section("forward_email.defaults.expect", defaults, "expect")
     alias_over = _section("forward_email.defaults.alias", defaults, "alias")

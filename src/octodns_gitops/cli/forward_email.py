@@ -10,6 +10,10 @@ Modes:
   plan / apply   diff desired state against the account (default)
   --export       write `<directory>/<domain>.yaml` from live state (bootstrap / re-baseline)
   --drift        compare FE's generated DNS records and read-only expectations with the repo
+
+Exit codes: 0 nothing wrong; 1 a finding, a refused prune, or any per-domain error (a bad
+per-domain file included — the other domains still run); 2 the invocation itself is invalid
+(the `forward_email:` block, a missing token, an unclaimed `--domain`).
 """
 
 from __future__ import annotations

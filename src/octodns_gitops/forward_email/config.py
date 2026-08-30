@@ -69,6 +69,61 @@ ALIAS_FIELDS: frozenset[str] = frozenset(
     }
 )
 
+# Scalar types per field. `bool` is checked strictly (it is an `int` subclass in Python), and a
+# string where a bool/int belongs is rejected: `"false"` would reach the API verbatim.
+_BOOL_SETTINGS = {
+    "has_adult_content_protection",
+    "has_phishing_protection",
+    "has_executable_protection",
+    "has_virus_protection",
+    "has_recipient_verification",
+    "ignore_mx_check",
+    "allow_subdomain_forwarding",
+    "has_delivery_logs",
+    "require_tls_inbound",
+}
+SETTINGS_TYPES: dict[str, type] = {
+    "smtp_port": str,
+    "retention_days": int,
+    "bounce_webhook": str,
+    "max_quota_per_alias": str,
+    "alias_default_smtp_limit": int,
+    **dict.fromkeys(_BOOL_SETTINGS, bool),
+}
+EXPECT_TYPES: dict[str, type] = {
+    "has_smtp": bool,
+    "has_newsletter": bool,
+    "max_recipients_per_alias": int,
+    "plan": str,
+}
+ALIAS_TYPES: dict[str, type] = {
+    "name": str,
+    "recipients": (str, list),
+    "description": str,
+    "labels": (str, list),
+    "is_enabled": bool,
+    "error_code_if_disabled": int,
+    "has_imap": bool,
+    "has_pgp": bool,
+    "public_key": str,
+    "has_recipient_verification": bool,
+    "max_quota": str,
+    "vacation_responder": dict,
+}
+# Alias fields a repo may default. Per-alias-only fields (quota, key, responder) are excluded:
+# a default there would silently be ignored by the reconciler.
+ALIAS_DEFAULTABLE: frozenset[str] = frozenset(
+    {
+        "is_enabled",
+        "error_code_if_disabled",
+        "has_imap",
+        "has_pgp",
+        "has_recipient_verification",
+        "description",
+        "labels",
+    }
+)
+
 # Decided 2026-08-30 (see the audit plan). `smtp_port` is a *string* on the API.
 DEFAULT_SETTINGS: dict = {
     "smtp_port": "25",
@@ -163,8 +218,24 @@ def _check_keys(where: str, given: dict, allowed: frozenset[str]) -> None:
         raise ForwardEmailConfigError(f"{where}: unknown or read-only field(s): {', '.join(unknown)}")
 
 
-def _normalize_domain(name: str) -> str:
-    return str(name).strip().rstrip(".").lower()
+def _check_types(where: str, given: dict, types: dict) -> None:
+    for k, v in given.items():
+        want = types.get(k)
+        if want is None:
+            continue
+        if want is bool:
+            ok = isinstance(v, bool)
+        else:
+            ok = isinstance(v, want) and not isinstance(v, bool)
+        if not ok:
+            names = "/".join(t.__name__ for t in (want if isinstance(want, tuple) else (want,)))
+            raise ForwardEmailConfigError(f"{where}: {k} must be {names}, got {type(v).__name__} ({v!r})")
+
+
+def _normalize_domain(name) -> str:
+    if not isinstance(name, str) or not name.strip():
+        raise ForwardEmailConfigError(f"forward_email.domains: entries must be non-empty strings, got {name!r}")
+    return name.strip().rstrip(".").lower()
 
 
 def load_forward_email(config_path: str) -> ForwardEmailConfig | None:
@@ -206,7 +277,10 @@ def load_forward_email(config_path: str) -> ForwardEmailConfig | None:
     alias_over = defaults.get("alias") or {}
     _check_keys("forward_email.defaults.settings", settings_over, SETTINGS_FIELDS)
     _check_keys("forward_email.defaults.expect", expect_over, EXPECT_FIELDS)
-    _check_keys("forward_email.defaults.alias", alias_over, ALIAS_FIELDS - {"name", "recipients"})
+    _check_keys("forward_email.defaults.alias", alias_over, ALIAS_DEFAULTABLE)
+    _check_types("forward_email.defaults.settings", settings_over, SETTINGS_TYPES)
+    _check_types("forward_email.defaults.expect", expect_over, EXPECT_TYPES)
+    _check_types("forward_email.defaults.alias", alias_over, ALIAS_TYPES)
 
     return ForwardEmailConfig(
         token_env=token_env,
@@ -218,14 +292,14 @@ def load_forward_email(config_path: str) -> ForwardEmailConfig | None:
     )
 
 
-def _as_list(value) -> list[str]:
+def _as_list(where: str, value) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
         return [value]
-    if isinstance(value, list):
-        return [str(v) for v in value]
-    raise ForwardEmailConfigError(f"expected a string or list, got {type(value).__name__}")
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        return list(value)
+    raise ForwardEmailConfigError(f"{where}: expected a string or a list of strings, got {value!r}")
 
 
 def load_domain_file(path: Path, domain: str) -> DesiredDomain:
@@ -242,6 +316,8 @@ def load_domain_file(path: Path, domain: str) -> DesiredDomain:
     expect = data.get("expect") or {}
     _check_keys(f"{path}: settings", settings, SETTINGS_FIELDS)
     _check_keys(f"{path}: expect", expect, EXPECT_FIELDS)
+    _check_types(f"{path}: settings", settings, SETTINGS_TYPES)
+    _check_types(f"{path}: expect", expect, EXPECT_TYPES)
 
     raw_aliases = data.get("aliases")
     if raw_aliases is None:
@@ -254,24 +330,26 @@ def load_domain_file(path: Path, domain: str) -> DesiredDomain:
     for i, raw in enumerate(raw_aliases):
         if not isinstance(raw, dict) or "name" not in raw:
             raise ForwardEmailConfigError(f"{path}: aliases[{i}] needs a name")
-        _check_keys(f"{path}: alias {raw['name']!r}", raw, ALIAS_FIELDS)
-        name = str(raw["name"])
+        where = f"{path}: alias {raw['name']!r}"
+        _check_keys(where, raw, ALIAS_FIELDS)
+        _check_types(where, raw, ALIAS_TYPES)
+        name = raw["name"]
         if name in seen:
             raise ForwardEmailConfigError(f"{path}: duplicate alias {name!r}")
         seen.add(name)
         aliases.append(
             DesiredAlias(
                 name=name,
-                recipients=_as_list(raw.get("recipients")),
+                recipients=_as_list(f"{where}: recipients", raw.get("recipients")),
                 description=raw.get("description"),
-                labels=_as_list(raw.get("labels")),
+                labels=_as_list(f"{where}: labels", raw.get("labels")),
                 is_enabled=raw.get("is_enabled"),
                 error_code_if_disabled=raw.get("error_code_if_disabled"),
                 has_imap=raw.get("has_imap"),
                 has_pgp=raw.get("has_pgp"),
                 public_key=raw.get("public_key"),
                 has_recipient_verification=raw.get("has_recipient_verification"),
-                max_quota=None if raw.get("max_quota") is None else str(raw["max_quota"]),
+                max_quota=raw.get("max_quota"),
                 vacation_responder=raw.get("vacation_responder"),
             )
         )

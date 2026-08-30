@@ -84,15 +84,26 @@ def _apply(plan: DomainPlan, client, out: TextIO) -> bool:
         out.write(f"  applied alias {chg.action} {chg.name}\n")
     if not deletes:
         return True
-    # A0: never prune from a single listing — re-fetch and require the same id set.
+    # A0: never prune from a single listing — re-fetch and require the same id set, and for
+    # every planned delete the same name and still no mailbox (a mailbox may appear under an
+    # unchanged id between the two listings).
     before = plan.live_alias_ids
-    after = {a.get("id") for a in client.list_aliases(plan.domain)}
-    if before != after:
+    relisted = {a.get("id"): a for a in client.list_aliases(plan.domain)}
+    if before != set(relisted):
         out.write(
             f"  ERROR: alias list for {plan.domain} changed between listings "
-            f"({len(before)} -> {len(after)} ids); prune aborted, re-run\n"
+            f"({len(before)} -> {len(relisted)} ids); prune aborted, re-run\n"
         )
         return False
+    for chg in deletes:
+        now = relisted[chg.alias_id]
+        if now.get("name") != chg.name or now.get("has_imap") or (now.get("storage_used") or 0) > 0:
+            out.write(
+                f"  ERROR: alias {chg.name} ({chg.alias_id}) changed between listings "
+                f"(now name={now.get('name')!r}, has_imap={now.get('has_imap')}, "
+                f"storage_used={now.get('storage_used')}); prune aborted, re-run\n"
+            )
+            return False
     for chg in deletes:
         client.delete_alias(plan.domain, chg.alias_id)
         out.write(f"  applied alias delete {chg.name}\n")
@@ -120,7 +131,11 @@ def run(
 
     if mode == "plan":
         out.write("APPLYING changes (--doit)\n" if doit else "DRY-RUN (default): no changes\n")
-    live_domains = {d["name"].lower(): d for d in client.list_domains()}
+    try:
+        live_domains = {d["name"].lower(): d for d in client.list_domains()}
+    except Exception as e:  # noqa: BLE001 - any failure here means nothing can be judged
+        out.write(f"ERROR  listing domains: {type(e).__name__}: {e}\n")
+        return 1
 
     rc = 0
     for domain in scope:
@@ -173,6 +188,9 @@ def run(
                 rc = 1
         except (ForwardEmailConfigError, ForwardEmailApiError) as e:
             out.write(f"{domain:<28} ERROR  {e}\n")
+            rc = 1
+        except Exception as e:  # noqa: BLE001 - one domain's failure must not abort the others
+            out.write(f"{domain:<28} ERROR  {type(e).__name__}: {e}\n")
             rc = 1
     return rc
 

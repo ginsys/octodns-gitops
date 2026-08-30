@@ -7,6 +7,7 @@ single-quoted — a double-quoted YAML scalar would read `\\w` as an escape sequ
 
 from __future__ import annotations
 
+import json
 import re
 
 from .config import (
@@ -17,7 +18,9 @@ from .config import (
 )
 from .reconcile import _ALIAS_SIMPLE, _vacation_enabled, parse_quota
 
-_PLAIN_OK = re.compile(r"^[A-Za-z0-9$_][A-Za-z0-9$_@.+\- ]*$")
+# Plain scalars must start with a letter, `_` or `$` (`$1@…` recipients): anything starting
+# with a digit — dates, `1e3`, `"25"` — is quoted so YAML cannot retype it.
+_PLAIN_OK = re.compile(r"^[A-Za-z$_][A-Za-z0-9$_@.+\- ]*$")
 _YAML_WORDS = {"true", "false", "null", "yes", "no", "on", "off", "~"}
 _QUOTA_UNITS = (("TB", 1024**4), ("GB", 1024**3), ("MB", 1024**2), ("KB", 1024))
 
@@ -30,14 +33,11 @@ def _scalar(v) -> str:
     if isinstance(v, (int, float)):
         return str(v)
     s = str(v)
-    plain = (
-        bool(_PLAIN_OK.match(s))
-        and s == s.strip()
-        and s.lower() not in _YAML_WORDS
-        and not re.fullmatch(r"[\d.]+", s)
-    )
-    if plain:
+    if bool(_PLAIN_OK.match(s)) and s == s.strip() and s.lower() not in _YAML_WORDS:
         return s
+    if "\n" in s or "\r" in s or "\t" in s:
+        # A single-quoted YAML scalar folds newlines; a JSON string is a valid double-quoted one.
+        return json.dumps(s, ensure_ascii=False)
     return "'" + s.replace("'", "''") + "'"
 
 

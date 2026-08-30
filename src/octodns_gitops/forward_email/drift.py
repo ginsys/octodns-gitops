@@ -30,12 +30,14 @@ def _records(zone: dict, name: str, rtype: str) -> list[dict]:
 
 
 def _values(zone: dict, name: str, rtype: str) -> list:
+    """All values of `name`/`rtype`; `value:` may itself hold a list in hand-written zone files."""
     out = []
     for r in _records(zone, name, rtype):
-        if "values" in r:
-            out.extend(r["values"])
-        elif "value" in r:
-            out.append(r["value"])
+        for key in ("values", "value"):
+            v = r.get(key)
+            if v is None:
+                continue
+            out.extend(v if isinstance(v, list) else [v])
     return out
 
 
@@ -55,6 +57,12 @@ def _dmarc_tags(v: str) -> dict:
 def check_zone(live_domain: dict, zone: dict, *, expect_mx: bool) -> list[DriftFinding]:
     findings: list[DriftFinding] = []
     recs = live_domain.get("smtp_dns_records") or {}
+    # A key FE did not return is unverifiable, never "clean".
+    findings.extend(
+        DriftFinding(k, f"Forward Email returned no smtp_dns_records.{k}; cannot verify the zone file")
+        for k in ("dkim", "return_path", "dmarc")
+        if not recs.get(k)
+    )
 
     dkim = recs.get("dkim")
     if dkim:

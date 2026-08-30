@@ -107,6 +107,22 @@ class TestExport:
         assert "labels" not in text
         assert "has_pgp" not in text
 
+    def test_date_like_and_multiline_strings_survive_yaml_round_trip(self, tmp_path):
+        aliases = [
+            _live_alias("a", description="2026-08-30"),
+            _live_alias("b", description="1e3"),
+            _live_alias(
+                "c",
+                vacation_responder={"is_enabled": True, "subject": "away", "message": "line1\nline2"},
+            ),
+        ]
+        p = tmp_path / "x.be.yaml"
+        p.write_text(export_domain(_cfg(), _live_domain(), aliases))
+        d = load_domain_file(p, "x.be")
+        assert d.aliases[0].description == "2026-08-30"
+        assert d.aliases[1].description == "1e3"
+        assert d.aliases[2].vacation_responder["message"] == "line1\nline2"
+
     def test_export_then_plan_is_a_zero_diff(self, tmp_path):
         # The A4 acceptance test in miniature.
         live_dom = _live_domain(retention_days=0, ignore_mx_check=True, has_newsletter=True)

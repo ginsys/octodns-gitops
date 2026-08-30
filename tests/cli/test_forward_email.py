@@ -182,8 +182,10 @@ class TestApply:
         rc, _out = _run(_cfg(tmp_path), client, doit=True)
         assert rc == 0
         assert ("update_domain", "x.be", {"retention_days": 30, "max_quota_per_alias": "1 GB"}) in client.calls
-        assert ("update_alias", "x.be", "id-a", {"name": "a", "recipients": ["new@y.z"]}) in client.calls
-        assert ("create_alias", "x.be", {"name": "b", "recipients": ["serge@ginsys.eu"]}) in client.calls
+        updates = {c[2]: c[3] for c in client.calls if c[0] == "update_alias"}
+        assert updates["id-a"]["recipients"] == ["new@y.z"]
+        creates = [c[2] for c in client.calls if c[0] == "create_alias"]
+        assert [(c["name"], c["recipients"]) for c in creates] == [("b", ["serge@ginsys.eu"])]
         assert not any(c[0] == "delete_alias" for c in client.calls)
 
     def test_prune_deletes_after_a_second_listing_agrees(self, tmp_path):
@@ -198,6 +200,24 @@ class TestApply:
         _write_domain_file(tmp_path, "x.be", "aliases: []\n")
         client = FakeClient([_live_domain("x.be")], {"x.be": [_live_alias("stray")]})
         client.mutate_on_relist = lambda c: c.aliases["x.be"].append(_live_alias("late"))
+        rc, out = _run(_cfg(tmp_path), client, doit=True, prune=True)
+        assert rc == 1
+        assert "changed between listings" in out
+        assert not any(c[0] == "delete_alias" for c in client.calls)
+
+    @pytest.mark.parametrize(
+        "mutation",
+        [
+            lambda a: a.update(has_imap=True),
+            lambda a: a.update(storage_used=1),
+            lambda a: a.update(name="renamed"),
+        ],
+        ids=["became-mailbox", "gained-mail", "renamed"],
+    )
+    def test_prune_aborts_when_a_planned_alias_changed_under_the_same_id(self, tmp_path, mutation):
+        _write_domain_file(tmp_path, "x.be", "aliases: []\n")
+        client = FakeClient([_live_domain("x.be")], {"x.be": [_live_alias("stray")]})
+        client.mutate_on_relist = lambda c: mutation(c.aliases["x.be"][0])
         rc, out = _run(_cfg(tmp_path), client, doit=True, prune=True)
         assert rc == 1
         assert "changed between listings" in out
@@ -218,6 +238,33 @@ class TestApply:
         assert rc == 0
         assert "unmanaged" in out and "stray" in out
         assert client.writes() == []
+
+
+class TestUnexpectedErrors:
+    def test_transport_failure_listing_domains_is_rc_1_not_a_traceback(self, tmp_path):
+        class Broken(FakeClient):
+            def list_domains(self):
+                raise OSError("connection refused")
+
+        rc, out = _run(_cfg(tmp_path), Broken([], {}))
+        assert rc == 1
+        assert "connection refused" in out
+
+    def test_per_domain_unexpected_error_is_reported_and_the_run_continues(self, tmp_path):
+        _write_domain_file(tmp_path, "x.be", "aliases: []\n")
+        _write_domain_file(tmp_path, "y.be", "aliases: []\n")
+
+        class Broken(FakeClient):
+            def list_aliases(self, domain):
+                if domain == "x.be":
+                    raise KeyError("id")
+                return super().list_aliases(domain)
+
+        client = Broken([_live_domain("x.be"), _live_domain("y.be")], {"y.be": []})
+        rc, out = _run(_cfg(tmp_path, ["x.be", "y.be"]), client)
+        assert rc == 1
+        assert "x.be" in out and "KeyError" in out
+        assert "y.be                         no changes" in out
 
 
 class TestExport:

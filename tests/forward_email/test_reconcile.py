@@ -103,7 +103,8 @@ class TestSettings:
 
 
 class TestAliases:
-    def test_missing_alias_is_created_with_defaults_omitted(self):
+    def test_missing_alias_is_created_with_every_resolved_flag_explicit(self):
+        # The server's own defaults are not ours: a create must pin every flag we resolve.
         plan = plan_domain(
             _desired([DesiredAlias("new", ["a@b.c"], description="hi")]),
             _cfg(),
@@ -113,7 +114,28 @@ class TestAliases:
         )
         (chg,) = plan.aliases
         assert chg.action == "create"
-        assert chg.body == {"name": "new", "recipients": ["a@b.c"], "description": "hi"}
+        assert chg.body == {
+            "name": "new",
+            "recipients": ["a@b.c"],
+            "description": "hi",
+            "is_enabled": True,
+            "error_code_if_disabled": 250,
+            "has_imap": False,
+            "has_pgp": False,
+            "has_recipient_verification": False,
+        }
+
+    def test_repo_alias_default_override_reaches_the_create_body(self):
+        plan = plan_domain(
+            _desired([DesiredAlias("new", ["a@b.c"])]),
+            _cfg(alias={"is_enabled": False, "error_code_if_disabled": 550}),
+            _live_domain(),
+            [],
+            prune=False,
+        )
+        (chg,) = plan.aliases
+        assert chg.body["is_enabled"] is False
+        assert chg.body["error_code_if_disabled"] == 550
 
     def test_changed_recipients_is_an_update_naming_the_field(self):
         plan = plan_domain(

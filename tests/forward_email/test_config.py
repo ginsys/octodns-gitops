@@ -127,6 +127,43 @@ class TestLoadForwardEmail:
             load_forward_email(str(cfg))
 
 
+class TestTypeValidation:
+    @pytest.mark.parametrize(
+        "block",
+        [
+            "defaults:\n    settings:\n      retention_days: forever\n",
+            "defaults:\n    settings:\n      require_tls_inbound: 'true'\n",
+            "defaults:\n    settings:\n      smtp_port: 25\n",  # int would diff forever
+            "defaults:\n    alias:\n      is_enabled: 'false'\n",
+            "defaults:\n    alias:\n      max_quota: 1 GB\n",  # only per-alias, never a default
+        ],
+    )
+    def test_wrong_scalar_types_in_defaults_rejected(self, tmp_path, block):
+        cfg = _write(tmp_path, "config.yaml", f"forward_email:\n  domains: [x.be]\n  {block}")
+        with pytest.raises(ForwardEmailConfigError):
+            load_forward_email(str(cfg))
+
+    def test_domains_must_be_strings(self, tmp_path):
+        cfg = _write(tmp_path, "config.yaml", "forward_email:\n  domains: [123]\n")
+        with pytest.raises(ForwardEmailConfigError, match="string"):
+            load_forward_email(str(cfg))
+
+    @pytest.mark.parametrize(
+        ("body", "needle"),
+        [
+            ("settings:\n  retention_days: forever\naliases: []\n", "retention_days"),
+            ("aliases:\n  - {name: a, recipients: [x@y.z], is_enabled: 'false'}\n", "is_enabled"),
+            ("aliases:\n  - {name: a, recipients: [x@y.z], error_code_if_disabled: '250'}\n", "error_code"),
+            ("aliases:\n  - {name: a, recipients: [1]}\n", "recipients"),
+            ("aliases:\n  - {name: a, recipients: [x@y.z], vacation_responder: yes}\n", "vacation_responder"),
+        ],
+    )
+    def test_wrong_scalar_types_in_domain_file_rejected(self, tmp_path, body, needle):
+        p = _write(tmp_path, "x.be.yaml", body)
+        with pytest.raises(ForwardEmailConfigError, match=needle):
+            load_domain_file(p, "x.be")
+
+
 class TestLoadDomainFile:
     def test_minimal_file(self, tmp_path):
         p = _write(

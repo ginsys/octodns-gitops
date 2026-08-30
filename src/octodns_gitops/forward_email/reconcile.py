@@ -109,11 +109,14 @@ def _vacation_enabled(v) -> bool:
 
 
 def _alias_body(resolved: dict, defaults: dict) -> dict:
-    """Create body: the fields that differ from the defaults, plus name/recipients."""
+    """Write body: name/recipients plus every resolved flag, explicitly.
+
+    The server's own defaults are not ours (a repo may default `is_enabled: false`), so a
+    create never leaves a flag for the server to choose.
+    """
     body = {"name": resolved["name"], "recipients": resolved["recipients"]}
     for f in _ALIAS_SIMPLE:
-        if resolved[f] != defaults[f]:
-            body[f] = resolved[f]
+        body[f] = resolved[f]
     if _norm_desc(resolved["description"]) != _norm_desc(defaults["description"]):
         body["description"] = resolved["description"]
     if resolved["public_key"]:
@@ -134,7 +137,6 @@ def _diff_alias(resolved: dict, live: dict, defaults: dict, domain_quota: int) -
     for f in _ALIAS_SIMPLE:
         if resolved[f] != live.get(f, defaults[f]):
             changes.append(f)
-            body[f] = resolved[f]  # an update must carry the value even when it is the default
     if _norm_desc(resolved["description"]) != _norm_desc(live.get("description")):
         changes.append("description")
         body["description"] = _norm_desc(resolved["description"])

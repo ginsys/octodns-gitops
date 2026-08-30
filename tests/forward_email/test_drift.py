@@ -98,6 +98,18 @@ class TestFindings:
         z = _zone(_dmarc={"type": "TXT", "value": r"v=DMARC1\; p=reject\; rua=mailto:dmarc-6a61b3b09bc@forwardemail.net\;"})
         assert check_zone(live, z, expect_mx=True) == []
 
+    def test_apex_txt_value_may_be_a_list(self):
+        # vanginderachter.name.yaml (live, 2026-08-30) writes `value: [a, b]` instead of `values:`.
+        z = _zone()
+        z[""][2] = {"type": "TXT", "value": ["forward-email-site-verification=WPoBifGj1Z", "v=spf1 -all"]}
+        assert check_zone(LIVE, z, expect_mx=True) == []
+
+    def test_missing_generated_records_on_the_fe_side_are_unverifiable_not_clean(self):
+        live = dict(LIVE, smtp_dns_records={})
+        assert _fields(check_zone(live, ZONE, expect_mx=True)) == ["dkim", "dmarc", "return_path"]
+        live = {k: v for k, v in LIVE.items() if k != "smtp_dns_records"}
+        assert _fields(check_zone(live, ZONE, expect_mx=True)) == ["dkim", "dmarc", "return_path"]
+
     def test_mx_checked_unless_domain_ignores_it(self):
         z = _zone()
         z[""][1]["values"] = [{"exchange": "aspmx.l.google.com.", "preference": 1}]

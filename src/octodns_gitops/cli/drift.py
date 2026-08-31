@@ -52,9 +52,13 @@ def generate_drift_config(config_path: str, output_path: str, provider: str) -> 
       - Original: sources=[zones], targets=[..., provider, ...]
       - Reversed: sources=[provider], targets=[zones]
 
-    Zones that do not target `provider` are excluded from this config.
-    Returns the reversed zones mapping (useful to know whether a --zone
-    filter applies to this provider at all).
+    Zones that do not target `provider` are kept as inert blockers
+    (original sources, targets: []): octoDNS skips them ("no eligible
+    targets") without populating anything, but the key stays present, so
+    a dynamic ('*'-prefixed) entry's expansion still subtracts it from
+    its candidates exactly as it would in the original config, and a
+    --zone filter naming such a zone resolves cleanly instead of
+    erroring. Returns the zones mapping that was written.
     """
     with open(config_path, "r") as f:
         cfg = yaml.safe_load(f)
@@ -65,14 +69,23 @@ def generate_drift_config(config_path: str, output_path: str, provider: str) -> 
     # Build reversed zone config, scoped to this provider
     reversed_zones = {}
     for zone_name, zone_cfg in zones.items():
-        targets = (zone_cfg or {}).get("targets") or []
-        if provider not in targets:
-            continue
-
-        reversed_zones[zone_name] = {
-            "sources": [provider],  # This live provider becomes the source
-            "targets": ["zones"],  # Local YAML becomes target
-        }
+        zone_cfg = zone_cfg or {}
+        # a bare `targets:` key loads as None -- treat as empty, like
+        # octoDNS's own manager does
+        targets = zone_cfg.get("targets") or []
+        if provider in targets:
+            reversed_zones[zone_name] = {
+                "sources": [provider],  # This live provider becomes the source
+                "targets": ["zones"],  # Local YAML becomes target
+            }
+        else:
+            # Inert blocker: never planned, but blocks dynamic expansion.
+            # Original sources are kept so a dynamic blocker expands into
+            # concrete blockers the same way octoDNS expands the original.
+            reversed_zones[zone_name] = {
+                "sources": zone_cfg.get("sources") or [],
+                "targets": [],
+            }
 
     out_cfg = {
         "providers": providers,
@@ -83,7 +96,12 @@ def generate_drift_config(config_path: str, output_path: str, provider: str) -> 
     if "processors" in cfg:
         out_cfg["processors"] = cfg["processors"]
     if "manager" in cfg:
-        out_cfg["manager"] = cfg["manager"]
+        # plan_outputs writes to a fixed filename; with one run per
+        # provider each run would overwrite the previous provider's plan
+        manager = dict(cfg["manager"] or {})
+        manager.pop("plan_outputs", None)
+        if manager:
+            out_cfg["manager"] = manager
 
     with open(output_path, "w") as f:
         yaml.safe_dump(out_cfg, f, sort_keys=False)
@@ -123,20 +141,12 @@ def main() -> int:
                 drift_config_path = f.name
             temp_paths.append(drift_config_path)
 
-            reversed_zones = generate_drift_config(
-                args.config, drift_config_path, provider
-            )
+            generate_drift_config(args.config, drift_config_path, provider)
 
-            if (
-                args.zone
-                and args.zone not in reversed_zones
-                # a '*'-prefixed key is a dynamic zone entry only octoDNS
-                # can expand -- the concrete zone may match it, so the
-                # skip is only decidable when every key is concrete
-                and not any(name.startswith("*") for name in reversed_zones)
-            ):
-                # This provider does not serve the requested zone
-                continue
+            # --zone is passed straight through: octoDNS applies the
+            # filter itself (IdnaDict case/IDNA normalization, dynamic
+            # zone expansion), and a provider not serving the zone hits
+            # its inert blocker entry -> "No changes were planned"
 
             # Run octodns-sync in dry-run mode (no --doit)
             cmd = [

@@ -36,7 +36,9 @@ def live_providers(zones: dict) -> list:
     in first-appearance order."""
     providers = []
     for zone_cfg in zones.values():
-        for target in (zone_cfg or {}).get("targets", []):
+        # a bare `targets:` key loads as None -- treat as empty, like
+        # octoDNS's own manager does
+        for target in (zone_cfg or {}).get("targets") or []:
             if target not in providers:
                 providers.append(target)
     return providers
@@ -63,7 +65,7 @@ def generate_drift_config(config_path: str, output_path: str, provider: str) -> 
     # Build reversed zone config, scoped to this provider
     reversed_zones = {}
     for zone_name, zone_cfg in zones.items():
-        targets = (zone_cfg or {}).get("targets", [])
+        targets = (zone_cfg or {}).get("targets") or []
         if provider not in targets:
             continue
 
@@ -125,7 +127,14 @@ def main() -> int:
                 args.config, drift_config_path, provider
             )
 
-            if args.zone and args.zone not in reversed_zones:
+            if (
+                args.zone
+                and args.zone not in reversed_zones
+                # a '*'-prefixed key is a dynamic zone entry only octoDNS
+                # can expand -- the concrete zone may match it, so the
+                # skip is only decidable when every key is concrete
+                and not any(name.startswith("*") for name in reversed_zones)
+            ):
                 # This provider does not serve the requested zone
                 continue
 

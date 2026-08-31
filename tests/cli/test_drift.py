@@ -469,6 +469,80 @@ class TestMultiTargetZones:
         for zone_cfg in result["zones"].values():
             assert zone_cfg["sources"] == ["hetzner"]
 
+    def test_live_providers_null_targets(self):
+        """`targets:` with no value loads as None -- treat as empty, like
+        octoDNS's own manager does (PR #5 review, P2)."""
+        zones = {"a.example.": {"targets": None}, "b.example.": None}
+        assert live_providers(zones) == []
+
+    def test_null_targets_zone_excluded(self, tmp_path):
+        """A zone with a null `targets:` must be skipped, not crash."""
+        config_in = tmp_path / "config.yaml"
+        config_in.write_text("""
+providers:
+  zones:
+    class: octodns.provider.yaml.YamlProvider
+  hetzner:
+    class: octodns_hetzner.HetznerProvider
+    token: env/TOKEN
+
+zones:
+  example.com.:
+    sources:
+      - zones
+    targets:
+      - hetzner
+  empty.example.:
+    sources:
+      - zones
+    targets:
+""")
+        out = tmp_path / "drift.yaml"
+        reversed_zones = generate_drift_config(
+            str(config_in), str(out), provider="hetzner"
+        )
+        assert set(reversed_zones) == {"example.com."}
+
+
+DYNAMIC_ZONE_CONFIG = """
+providers:
+  zones:
+    class: octodns.provider.yaml.YamlProvider
+  hetzner:
+    class: octodns_hetzner.HetznerProvider
+    token: env/TOKEN
+
+zones:
+  '*':
+    sources:
+      - zones
+    targets:
+      - hetzner
+"""
+
+
+class TestZoneFilterDynamicZones:
+    """--zone must not skip a provider whose config uses dynamic zone
+    entries ('*'-prefixed keys): only octoDNS can expand those, so the
+    concrete zone name never appears as a key here (PR #5 review, P1)."""
+
+    def test_dynamic_zone_config_not_skipped(self, tmp_path):
+        config = tmp_path / "config.yaml"
+        config.write_text(DYNAMIC_ZONE_CONFIG)
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="", stderr="No changes were planned"
+            )
+            argv = ["drift", "--config", str(config), "--zone", "example.com."]
+            with patch("sys.argv", argv):
+                result = main()
+
+        assert result == 0
+        assert mock_run.call_count == 1
+        cmd = mock_run.call_args[0][0]
+        assert "example.com." in cmd
+
 
 class TestMainMultiTarget:
     """main() runs octodns-sync once per live provider and aggregates."""

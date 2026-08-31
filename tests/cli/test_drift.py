@@ -141,8 +141,10 @@ manager:
         assert "manager" in result
         assert result["manager"]["max_workers"] == 4
 
-    def test_skips_zones_without_targets(self, tmp_path):
-        """Zones without targets should be skipped."""
+    def test_zone_without_targets_becomes_blocker(self, tmp_path):
+        """A zone not targeting the provider stays in the config as an
+        inert blocker (targets: []) so octoDNS skips it but dynamic
+        expansion still sees the key."""
         config_in = tmp_path / "config.yaml"
         config_out = tmp_path / "drift.yaml"
 
@@ -165,7 +167,48 @@ zones:
         with open(config_out) as f:
             result = yaml.safe_load(f)
 
-        assert "example.com." not in result.get("zones", {})
+        assert result["zones"]["example.com."] == {
+            "sources": ["zones"],
+            "targets": [],
+        }
+
+    def test_manager_plan_outputs_stripped(self, tmp_path):
+        """manager.plan_outputs writes to a fixed filename; with one run
+        per provider each run would overwrite the previous provider's
+        plan, so it must not be copied (PR #5 review round 2)."""
+        config_in = tmp_path / "config.yaml"
+        config_out = tmp_path / "drift.yaml"
+
+        config_in.write_text("""
+providers:
+  zones:
+    class: octodns.provider.yaml.YamlProvider
+  hetzner:
+    class: octodns_hetzner.HetznerProvider
+
+zones:
+  example.com.:
+    sources:
+      - zones
+    targets:
+      - hetzner
+
+manager:
+  max_workers: 4
+  plan_outputs:
+    json:
+      class: octodns.provider.plan.PlanJson
+      filename: plan.json
+""")
+
+        generate_drift_config(str(config_in), str(config_out), provider="hetzner")
+
+        import yaml
+
+        with open(config_out) as f:
+            result = yaml.safe_load(f)
+
+        assert result["manager"] == {"max_workers": 4}
 
     def test_uses_zones_as_target(self, tmp_path):
         """Local YAML provider should be target in reversed config."""
@@ -458,8 +501,12 @@ class TestMultiTargetZones:
             result = yaml.safe_load(f)
         assert result["zones"]["example.com."]["sources"] == ["desec"]
         assert result["zones"]["example.com."]["targets"] == ["zones"]
-        # single.example. does not target desec -> excluded from this config
-        assert "single.example." not in result["zones"]
+        # single.example. does not target desec -> inert blocker: octoDNS
+        # skips it (no targets) but the key still blocks dynamic expansion
+        assert result["zones"]["single.example."] == {
+            "sources": ["zones"],
+            "targets": [],
+        }
 
         out_hetzner = tmp_path / "drift-hetzner.yaml"
         generate_drift_config(str(config_in), str(out_hetzner), provider="hetzner")
@@ -475,8 +522,8 @@ class TestMultiTargetZones:
         zones = {"a.example.": {"targets": None}, "b.example.": None}
         assert live_providers(zones) == []
 
-    def test_null_targets_zone_excluded(self, tmp_path):
-        """A zone with a null `targets:` must be skipped, not crash."""
+    def test_null_targets_zone_becomes_blocker(self, tmp_path):
+        """A zone with a null `targets:` must become a blocker, not crash."""
         config_in = tmp_path / "config.yaml"
         config_in.write_text("""
 providers:
@@ -498,10 +545,57 @@ zones:
     targets:
 """)
         out = tmp_path / "drift.yaml"
-        reversed_zones = generate_drift_config(
-            str(config_in), str(out), provider="hetzner"
-        )
-        assert set(reversed_zones) == {"example.com."}
+        generate_drift_config(str(config_in), str(out), provider="hetzner")
+
+        import yaml
+
+        with open(out) as f:
+            result = yaml.safe_load(f)
+        assert result["zones"]["example.com."]["sources"] == ["hetzner"]
+        assert result["zones"]["empty.example."]["targets"] == []
+
+    def test_shadowed_explicit_zone_kept_as_blocker(self, tmp_path):
+        """'*' targets [p1, p2] while special.example. targets only [p1]:
+        p2's config must keep special.example. as a blocker, or octoDNS's
+        wildcard expansion re-includes it for p2 (explicit keys are
+        subtracted from dynamic candidates -- PR #5 review round 2)."""
+        config_in = tmp_path / "config.yaml"
+        config_in.write_text("""
+providers:
+  zones:
+    class: octodns.provider.yaml.YamlProvider
+  p1:
+    class: octodns_hetzner.HetznerProvider
+    token: env/TOKEN
+  p2:
+    class: octodns_desec.DesecProvider
+    token: env/TOKEN2
+
+zones:
+  '*':
+    sources:
+      - zones
+    targets:
+      - p1
+      - p2
+  special.example.:
+    sources:
+      - zones
+    targets:
+      - p1
+""")
+
+        import yaml
+
+        out = tmp_path / "drift-p2.yaml"
+        generate_drift_config(str(config_in), str(out), provider="p2")
+        with open(out) as f:
+            result = yaml.safe_load(f)
+        assert result["zones"]["*"]["sources"] == ["p2"]
+        assert result["zones"]["special.example."] == {
+            "sources": ["zones"],
+            "targets": [],
+        }
 
 
 DYNAMIC_ZONE_CONFIG = """
@@ -604,6 +698,22 @@ class TestMainMultiTarget:
         assert "Drift detected" in captured.out
         # provider order is first-appearance: hetzner then desec
         assert "desec" in captured.out
+
+    def test_zone_passed_to_all_providers(self, mock_subprocess, config):
+        """--zone runs against every provider: octoDNS itself applies the
+        filter (IdnaDict normalization, dynamic expansion), and a
+        provider not serving the zone hits its inert blocker entry and
+        planning is skipped (PR #5 review round 2)."""
+        mock_subprocess.side_effect = [self._result(), self._result()]
+
+        argv = ["drift", "--config", str(config), "--zone", "single.example."]
+        with patch("sys.argv", argv):
+            result = main()
+
+        assert result == 0
+        assert mock_subprocess.call_count == 2
+        for call in mock_subprocess.call_args_list:
+            assert "single.example." in call.args[0]
 
     def test_error_in_first_provider_returns_two(
         self, mock_subprocess, config, capsys

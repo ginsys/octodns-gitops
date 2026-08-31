@@ -1,12 +1,11 @@
 """Tests for cli/drift.py"""
 
-import pytest
-from unittest.mock import patch, MagicMock
-import os
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from octodns_gitops.cli.drift import generate_drift_config, main
+import pytest
+from octodns_gitops.cli.drift import generate_drift_config, live_providers, main
 
 
 class TestGenerateDriftConfig:
@@ -34,7 +33,7 @@ zones:
       - hetzner
 """)
 
-        generate_drift_config(str(config_in), str(config_out))
+        generate_drift_config(str(config_in), str(config_out), provider="hetzner")
 
         import yaml
 
@@ -65,7 +64,7 @@ zones:
       - hetzner
 """)
 
-        generate_drift_config(str(config_in), str(config_out))
+        generate_drift_config(str(config_in), str(config_out), provider="hetzner")
 
         import yaml
 
@@ -99,7 +98,7 @@ processors:
     class: octodns_gitops.processors.ExternalDnsFilter
 """)
 
-        generate_drift_config(str(config_in), str(config_out))
+        generate_drift_config(str(config_in), str(config_out), provider="hetzner")
 
         import yaml
 
@@ -132,7 +131,7 @@ manager:
   max_workers: 4
 """)
 
-        generate_drift_config(str(config_in), str(config_out))
+        generate_drift_config(str(config_in), str(config_out), provider="hetzner")
 
         import yaml
 
@@ -159,7 +158,7 @@ zones:
     # No targets
 """)
 
-        generate_drift_config(str(config_in), str(config_out))
+        generate_drift_config(str(config_in), str(config_out), provider="hetzner")
 
         import yaml
 
@@ -188,7 +187,7 @@ zones:
       - hetzner
 """)
 
-        generate_drift_config(str(config_in), str(config_out))
+        generate_drift_config(str(config_in), str(config_out), provider="hetzner")
 
         import yaml
 
@@ -365,9 +364,9 @@ zones:
 
         # Check no new temp yaml files remain
         temp_files_after = set(Path(tempfile.gettempdir()).glob("*.yaml"))
-        new_files = temp_files_after - temp_files_before
         # May have some other yaml files, but drift config should be cleaned
         # This is a weak test - just ensure it doesn't crash
+        assert temp_files_after >= temp_files_before
 
     def test_zone_filter(self, mock_subprocess, tmp_path):
         """--zone flag should filter to specific zone."""
@@ -400,3 +399,148 @@ zones:
 
         cmd = mock_subprocess.call_args[0][0]
         assert "example.com." in cmd
+
+
+MULTI_TARGET_CONFIG = """
+providers:
+  zones:
+    class: octodns.provider.yaml.YamlProvider
+  hetzner:
+    class: octodns_hetzner.HetznerProvider
+    token: env/TOKEN
+  desec:
+    class: octodns_desec.DesecProvider
+    token: env/TOKEN2
+
+zones:
+  example.com.:
+    sources:
+      - zones
+    targets:
+      - hetzner
+      - desec
+  single.example.:
+    sources:
+      - zones
+    targets:
+      - hetzner
+"""
+
+
+class TestMultiTargetZones:
+    """One reversed config per live provider.
+
+    Regression tests for #4: reversing a multi-target zone's full targets
+    list into sources populates one octoDNS zone object from every live
+    provider, and any record present in more than one of them raises
+    DuplicateRecordException (lenient=False). With a shadow-provider setup
+    every record collides, so drift-check could never run at all.
+    """
+
+    def test_live_providers_ordered_dedup(self, tmp_path):
+        """All live providers, in first-appearance order, deduplicated."""
+        import yaml
+
+        cfg = yaml.safe_load(MULTI_TARGET_CONFIG)
+        assert live_providers(cfg["zones"]) == ["hetzner", "desec"]
+
+    def test_config_scoped_to_provider(self, tmp_path):
+        """A provider's config carries only that provider as source, and
+        only the zones that target it."""
+        config_in = tmp_path / "config.yaml"
+        config_in.write_text(MULTI_TARGET_CONFIG)
+
+        import yaml
+
+        out_desec = tmp_path / "drift-desec.yaml"
+        generate_drift_config(str(config_in), str(out_desec), provider="desec")
+        with open(out_desec) as f:
+            result = yaml.safe_load(f)
+        assert result["zones"]["example.com."]["sources"] == ["desec"]
+        assert result["zones"]["example.com."]["targets"] == ["zones"]
+        # single.example. does not target desec -> excluded from this config
+        assert "single.example." not in result["zones"]
+
+        out_hetzner = tmp_path / "drift-hetzner.yaml"
+        generate_drift_config(str(config_in), str(out_hetzner), provider="hetzner")
+        with open(out_hetzner) as f:
+            result = yaml.safe_load(f)
+        assert set(result["zones"]) == {"example.com.", "single.example."}
+        for zone_cfg in result["zones"].values():
+            assert zone_cfg["sources"] == ["hetzner"]
+
+
+class TestMainMultiTarget:
+    """main() runs octodns-sync once per live provider and aggregates."""
+
+    @pytest.fixture
+    def mock_subprocess(self):
+        with patch("subprocess.run") as mock_run:
+            yield mock_run
+
+    @pytest.fixture
+    def config(self, tmp_path):
+        config = tmp_path / "config.yaml"
+        config.write_text(MULTI_TARGET_CONFIG)
+        return config
+
+    @staticmethod
+    def _result(returncode=0, stderr="No changes were planned"):
+        return MagicMock(returncode=returncode, stdout="", stderr=stderr)
+
+    def test_runs_sync_once_per_provider(self, mock_subprocess, config, capsys):
+        """Two live providers -> two octodns-sync runs; all clean -> 0."""
+        mock_subprocess.side_effect = [self._result(), self._result()]
+
+        with patch("sys.argv", ["drift", "--config", str(config)]):
+            result = main()
+
+        assert result == 0
+        assert mock_subprocess.call_count == 2
+        captured = capsys.readouterr()
+        assert "No drift" in captured.out
+
+    def test_each_run_gets_its_own_config(self, mock_subprocess, config):
+        """The two runs must use two different generated config files."""
+        mock_subprocess.side_effect = [self._result(), self._result()]
+
+        with patch("sys.argv", ["drift", "--config", str(config)]):
+            main()
+
+        config_files = [
+            call.args[0][call.args[0].index("--config-file") + 1]
+            for call in mock_subprocess.call_args_list
+        ]
+        assert len(set(config_files)) == 2
+
+    def test_drift_in_one_provider_returns_one_and_names_it(
+        self, mock_subprocess, config, capsys
+    ):
+        """Drift in the second provider only -> 1, report names the provider."""
+        mock_subprocess.side_effect = [
+            self._result(),
+            self._result(stderr="* example.com.\n*   Create <ARecord ...>\n"),
+        ]
+
+        with patch("sys.argv", ["drift", "--config", str(config)]):
+            result = main()
+
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "Drift detected" in captured.out
+        # provider order is first-appearance: hetzner then desec
+        assert "desec" in captured.out
+
+    def test_error_in_first_provider_returns_two(
+        self, mock_subprocess, config, capsys
+    ):
+        """A failed sync run -> 2, remaining providers not reached."""
+        mock_subprocess.side_effect = [
+            self._result(returncode=1, stderr="Some error occurred"),
+        ]
+
+        with patch("sys.argv", ["drift", "--config", str(config)]):
+            result = main()
+
+        assert result == 2
+        assert mock_subprocess.call_count == 1

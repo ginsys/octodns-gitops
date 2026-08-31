@@ -13,6 +13,7 @@ from octodns_gitops.cli.forward_email import (
     run,
     zone_lookup,
 )
+from octodns_gitops.forward_email.api import ForwardEmailApiError
 from octodns_gitops.forward_email.config import (
     DEFAULT_ALIAS,
     DEFAULT_EXPECT,
@@ -140,6 +141,32 @@ class TestPlan:
         assert "no changes" in out
         assert client.writes() == []
 
+    def test_lookaround_alias_with_a_planned_change_warns_at_plan_time(self, tmp_path):
+        # FE rejects Perl look-around on every write to such an alias (it validates the stored
+        # pattern, so even a quota-only update fails): say so at plan time, not mid-apply.
+        name = "/^(?!keep$)(.*)$/"
+        _write_domain_file(
+            tmp_path,
+            "x.be",
+            "aliases:\n  - name: '/^(?!keep$)(.*)$/'\n    recipients: [new@y.z]\n",
+        )
+        client = FakeClient([_live_domain("x.be")], {"x.be": [_live_alias(name)]})
+        rc, out = _run(_cfg(tmp_path), client)
+        assert rc == 0
+        assert "WARNING" in out and "look-around" in out
+
+    def test_lookaround_alias_with_no_planned_change_stays_silent(self, tmp_path):
+        name = "/^(?!keep$)(.*)$/"
+        _write_domain_file(
+            tmp_path,
+            "x.be",
+            "aliases:\n  - name: '/^(?!keep$)(.*)$/'\n    recipients: [serge@ginsys.eu]\n",
+        )
+        client = FakeClient([_live_domain("x.be")], {"x.be": [_live_alias(name)]})
+        rc, out = _run(_cfg(tmp_path), client)
+        assert rc == 0
+        assert "WARNING" not in out and "no changes" in out
+
     def test_changes_are_printed_but_not_applied_without_doit(self, tmp_path):
         _write_domain_file(tmp_path, "x.be", "aliases:\n  - {name: a, recipients: [serge@ginsys.eu]}\n")
         client = FakeClient([_live_domain("x.be", retention_days=0)], {"x.be": [_live_alias("a")]})
@@ -258,6 +285,28 @@ class TestApply:
         assert rc == 1
         assert "mailbox" in out
         assert client.writes() == []
+
+    def test_one_failing_alias_write_does_not_abort_the_domains_remaining_writes(self, tmp_path):
+        # ginsys/octodns-gitops#2: FE 400s updates to a grandfathered look-around alias; the
+        # domain's other, independent alias writes must still be attempted (and rc stay 1).
+        _write_domain_file(
+            tmp_path,
+            "x.be",
+            "aliases:\n  - {name: bad, recipients: [new@y.z]}\n  - {name: good, recipients: [new@y.z]}\n",
+        )
+
+        class Rejecting(FakeClient):
+            def update_alias(self, domain, alias_id, body):
+                if alias_id == "id-bad":
+                    raise ForwardEmailApiError(400, "invalid perl operator: (?!", "PUT", "u")
+                return super().update_alias(domain, alias_id, body)
+
+        client = Rejecting([_live_domain("x.be")], {"x.be": [_live_alias("bad"), _live_alias("good")]})
+        rc, out = _run(_cfg(tmp_path), client, doit=True)
+        assert rc == 1
+        assert "ERROR" in out and "bad" in out and "400" in out
+        applied = {c[2] for c in client.calls if c[0] == "update_alias"}
+        assert "id-good" in applied
 
     def test_unmanaged_alias_without_prune_is_reported_only(self, tmp_path):
         _write_domain_file(tmp_path, "x.be", "aliases: []\n")

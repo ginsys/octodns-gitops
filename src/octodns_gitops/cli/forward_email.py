@@ -114,6 +114,7 @@ def _print_plan(plan: DomainPlan, out: TextIO) -> None:
         f"  expect: {m.field} is {m.live!r}, expected {m.desired!r} (read-only, not written)\n"
         for m in plan.expect_mismatch
     )
+    out.writelines(f"  WARNING: {w}\n" for w in plan.warnings)
     out.writelines(f"  ERROR: {e}\n" for e in plan.errors)
 
 
@@ -142,11 +143,14 @@ def _prune_still_safe(plan: DomainPlan, deletes: list, client, out: TextIO) -> b
 
 
 def _apply(plan: DomainPlan, client, out: TextIO) -> bool:
-    """Perform the writes for one domain. Returns False if the prune guard aborted.
+    """Perform the writes for one domain. Returns False if the prune guard aborted or any
+    alias write failed — the domain's remaining, independent alias writes are still attempted
+    (ginsys/octodns-gitops#2: one 400 must not hold the rest of its domain hostage).
 
     Order: settings PUT, prune re-list, creates/updates, deletes. The re-list must precede
     our own creates — they change the id set, so a create+delete plan would otherwise always
-    abort half-applied.
+    abort half-applied. A settings PUT failure still aborts the domain: it is domain-level,
+    not one alias's problem.
     """
     body = plan.settings_body()
     if body:
@@ -155,18 +159,29 @@ def _apply(plan: DomainPlan, client, out: TextIO) -> bool:
     deletes = [c for c in plan.aliases if c.action == "delete"]
     if deletes and not _prune_still_safe(plan, deletes, client, out):
         return False
+    ok = True
     for chg in plan.aliases:
-        if chg.action == "create":
-            client.create_alias(plan.domain, chg.body)
-        elif chg.action == "update":
-            client.update_alias(plan.domain, chg.alias_id, chg.body)
-        else:
+        try:
+            if chg.action == "create":
+                client.create_alias(plan.domain, chg.body)
+            elif chg.action == "update":
+                client.update_alias(plan.domain, chg.alias_id, chg.body)
+            else:
+                continue
+        except ForwardEmailApiError as e:
+            out.write(f"  ERROR  alias {chg.action} {chg.name}: {e}\n")
+            ok = False
             continue
         out.write(f"  applied alias {chg.action} {chg.name}\n")
     for chg in deletes:
-        client.delete_alias(plan.domain, chg.alias_id)
+        try:
+            client.delete_alias(plan.domain, chg.alias_id)
+        except ForwardEmailApiError as e:
+            out.write(f"  ERROR  alias delete {chg.name}: {e}\n")
+            ok = False
+            continue
         out.write(f"  applied alias delete {chg.name}\n")
-    return True
+    return ok
 
 
 def _preserved_write_only(path: Path) -> dict:

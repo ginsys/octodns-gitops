@@ -116,6 +116,13 @@ Contract:
   `subject` and `message`.
 - `max_quota_per_alias` and `bounce_webhook` cannot be read back from the API: they are sent with
   every domain update but never produce a diff on their own.
+- Forward Email re-validates an alias's **stored** regex pattern on every write to that alias, and
+  no longer accepts Perl-style look-around (`(?!`, `(?=`, `(?<`). A grandfathered look-around
+  alias exports and plans normally but 400s on any update — even one that changes nothing else,
+  and even when the update body omits the name. The plan prints a WARNING when it is about to
+  touch such an alias; changing anything on it means recreating it with a supported pattern (or
+  pinning its current live values in git so no update is planned). One failing alias write does
+  not skip the domain's remaining writes; the run still exits 1.
 
 ## Quick Start with mise
 

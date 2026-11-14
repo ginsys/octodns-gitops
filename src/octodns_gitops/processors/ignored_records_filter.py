@@ -3,8 +3,8 @@ Custom octodns processor to ignore specific records by (zone, name, type).
 
 Some DNS records are authoritatively managed outside octodns by a system that
 leaves no ownership marker octodns can detect (unlike external-dns, see
-ExternalDnsFilter). For example, the `wan-dyn-dns` tool
-(opnsense-dyndns-hetzner) writes apex/host A records straight to the provider
+ExternalDnsFilter). For example, the `wan-dns-sync` tool
+(deployed as `wan-dyn-dns`) writes apex/host A records straight to the provider
 with no TXT registry entry. Without a signal, octodns treats them as orphan
 records and plans to delete them, fighting the external manager.
 
